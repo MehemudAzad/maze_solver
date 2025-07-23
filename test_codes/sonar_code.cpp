@@ -31,6 +31,81 @@ uint8_t speed_increment = 25; // Speed change step
 uint8_t control_mode = 0;   // 0 = Bluetooth, 1 = Gesture
 
 
+//! gyro scope code
+#define MPU6050_ADDR 0x68
+#define ACCEL_SCALE 16384.0 // �2g range, 16384 LSB/g
+
+// 50 Hz PWM setup
+#define PULSE_CENTER 188 // 1504 �s (~0�)
+#define PULSE_RANGE 125  // �1004�2004 �s (~-90� to +90�)
+
+// === TWI (I2C) ===
+void TWI_Init() {
+	TWSR = 0x00; // Status register
+	TWBR = 32;   // Bit rate register (~100kHz at 1 MHz)
+	TWCR = (1 << TWEN); // Enable TWI
+}
+
+void TWI_Start() {
+	TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN);
+	while (!(TWCR & (1 << TWINT)));
+}
+
+void TWI_Stop() {
+	TWCR = (1 << TWINT) | (1 << TWSTO) | (1 << TWEN);
+	_delay_us(100);
+}
+
+void TWI_Write(unsigned char data) {
+	TWDR = data;
+	TWCR = (1 << TWINT) | (1 << TWEN);
+	while (!(TWCR & (1 << TWINT)));
+}
+
+unsigned char TWI_Read_ACK() {
+	TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWEA);
+	while (!(TWCR & (1 << TWINT)));
+	return TWDR;
+}
+
+unsigned char TWI_Read_NACK() {
+	TWCR = (1 << TWINT) | (1 << TWEN);
+	while (!(TWCR & (1 << TWINT)));
+	return TWDR;
+}
+
+// === MPU6050 ===
+void MPU6050_Init() {
+	TWI_Start();
+	TWI_Write(MPU6050_ADDR << 1); // Write mode
+	TWI_Write(0x6B); // Power management register
+	TWI_Write(0x00); // Wake up
+	TWI_Stop();
+
+	TWI_Start();
+	TWI_Write(MPU6050_ADDR << 1);
+	TWI_Write(0x1C); // Accelerometer config register
+	TWI_Write(0x00); // �2g range
+	TWI_Stop();
+}
+
+void MPU6050_ReadAccel(int16_t *accelY, int16_t *accelZ) {
+	TWI_Start();
+	TWI_Write(MPU6050_ADDR << 1); // Write mode
+	TWI_Write(0x3D); // Start at ACCEL_YOUT_H
+	TWI_Stop();
+
+	TWI_Start();
+	TWI_Write((MPU6050_ADDR << 1) | 1); // Read mode
+	TWI_Read_ACK(); // Skip X high
+	TWI_Read_ACK(); // Skip X low
+	*accelY = ((int16_t)(TWI_Read_ACK() << 8) | TWI_Read_ACK()); // Y high, low
+	*accelZ = ((int16_t)(TWI_Read_ACK() << 8) | TWI_Read_NACK()); // Z high, low
+	TWI_Stop();
+}
+
+
+//! sonar init
 void sonar_init(void) {
     DDRD |= (1 << SONAR_TRIG);  // TRIG as output
     DDRD &= ~(1 << SONAR_ECHO); // ECHO as input
