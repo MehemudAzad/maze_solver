@@ -1,9 +1,9 @@
 {
-  "C_Cpp_Runner.cCompilerPath": "/Users/mr.x/.platformio/packages/toolchain-atmelavr/bin/avr-gcc",
-  "C_Cpp_Runner.cppCompilerPath": "/Users/mr.x/.platformio/packages/toolchain-atmelavr/bin/avr-g++",
-  "C_Cpp_Runner.debuggerPath": "/Users/mr.x/.platformio/packages/toolchain-atmelavr/bin/avr-gdb",
-  "C_Cpp_Runner.cStandard": "gnu11",
-  "C_Cpp_Runner.cppStandard": "gnu++17",
+  "C_Cpp_Runner.cCompilerPath": "clang",
+  "C_Cpp_Runner.cppCompilerPath": "clang++",
+  "C_Cpp_Runner.debuggerPath": "lldb",
+  "C_Cpp_Runner.cStandard": "c17",
+  "C_Cpp_Runner.cppStandard": "c++11",
   "C_Cpp_Runner.msvcBatchPath": "",
   "C_Cpp_Runner.useMsvc": false,
   "C_Cpp_Runner.warnings": [
@@ -37,24 +37,7 @@
   "C_Cpp_Runner.warningsAsError": false,
   "C_Cpp_Runner.compilerArgs": [],
   "C_Cpp_Runner.linkerArgs": [],
-  "C_Cpp_Runner.includePaths": [
-    "/Users/mr.x/Desktop/Automated_Maze_Solver_CSE_316/include",
-    "/Users/mr.x/Desktop/Automated_Maze_Solver_CSE_316/src",
-    "/Users/mr.x/.platformio/packages/framework-arduino-avr-mightycore/cores/MightyCore",
-    "/Users/mr.x/.platformio/packages/framework-arduino-avr-mightycore/variants/standard",
-    "/Users/mr.x/.platformio/packages/framework-arduino-avr-mightycore/libraries/AVR_examples/src",
-    "/Users/mr.x/.platformio/packages/framework-arduino-avr-mightycore/libraries/EEPROM/src",
-    "/Users/mr.x/.platformio/packages/framework-arduino-avr-mightycore/libraries/Flash/src",
-    "/Users/mr.x/.platformio/packages/framework-arduino-avr-mightycore/libraries/SD/src",
-    "/Users/mr.x/.platformio/packages/framework-arduino-avr-mightycore/libraries/SPI/src",
-    "/Users/mr.x/.platformio/packages/framework-arduino-avr-mightycore/libraries/SPI1/src",
-    "/Users/mr.x/.platformio/packages/framework-arduino-avr-mightycore/libraries/Servo/src",
-    "/Users/mr.x/.platformio/packages/framework-arduino-avr-mightycore/libraries/SoftwareSerial/src",
-    "/Users/mr.x/.platformio/packages/framework-arduino-avr-mightycore/libraries/Timer/src",
-    "/Users/mr.x/.platformio/packages/framework-arduino-avr-mightycore/libraries/Wire/src",
-    "/Users/mr.x/.platformio/packages/framework-arduino-avr-mightycore/libraries/Wire1/src",
-    ""
-  ],
+  "C_Cpp_Runner.includePaths": [],
   "C_Cpp_Runner.includeSearch": [
     "*",
     "**/*"
