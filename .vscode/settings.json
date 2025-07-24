@@ -58,6 +58,7 @@
   "C_Cpp_Runner.msvcSecureNoWarnings": false,
   "files.associations": {
     "*.ejs": "html",
-    "cmath": "cpp"
+    "cmath": "cpp",
+    "__bit_reference": "cpp"
   }
 }

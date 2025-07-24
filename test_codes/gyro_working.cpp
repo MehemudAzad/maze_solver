@@ -239,7 +239,7 @@ int main() {
 			} else if (cmd == 'G' || cmd == 'g') {
 				if (calibrated) {
 					serial_string("Roll: ");
-					serial_num((int16_t)roll);
+					serial_num((int16_t)roll*0.7);
 					serial_string("° | Pitch: ");
 					serial_num((int16_t)pitch);
 					serial_string("° | Yaw: ");
