@@ -224,11 +224,11 @@ void test_pwm() {
 void motor_forward() {
     PORTA &= ~((1 << MOTOR1_IN1) | (1 << MOTOR2_IN1));
     PORTA |= (1 << MOTOR1_IN2) | (1 << MOTOR2_IN2);
-    // set_right_motor_speed(motor_speed);
-	// set_left_motor_speed(motor_speed+16.5);
-	set_right_motor_speed(motor_speed-20);
-	set_left_motor_speed(motor_speed-20+10);
-	_delay_ms(1000);
+    set_right_motor_speed(motor_speed + 4);
+	  set_left_motor_speed(motor_speed);
+	// set_right_motor_speed(motor_speed-20);
+	// set_left_motor_speed(motor_speed-20+10);
+	// _delay_ms(1000);
 }
 
 void motor_stop() {
@@ -240,8 +240,8 @@ void motor_reverse() {
 	PORTA &= ~((1 << MOTOR1_IN2) | (1 << MOTOR2_IN2));
     PORTA |= (1 << MOTOR1_IN1) | (1 << MOTOR2_IN1);
     set_motor_speed(motor_speed);
-	set_right_motor_speed(motor_speed-20);
-	set_left_motor_speed(motor_speed+16.5-20);
+	  set_right_motor_speed(motor_speed);
+	  set_left_motor_speed(motor_speed+16.5);
 	_delay_ms(1000);
 }
 

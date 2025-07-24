@@ -31,15 +31,7 @@ void set_left_motor_speed(uint8_t speed);
 uint8_t isTurning = 0;      // 0=not turning, 1=left turn, 2=right turn
 float startAngle = 0;       // Angle when turn started
 float currentAngle = 0;     // Current roll angle * 0.7
-uint8_t sequenceStep = 0;   // 0=left, 1=right, 2=forward, 3=done
-
-// Global variables for straight-line control
-uint8_t isMovingStraight = 0; // Flag for straight movement mode
-float forwardSetpointAngle = 0; // Target roll angle for straight movement
-const float Kp = 2.5;         // Proportional gain for correction (tune if needed)
-const int LEFT_MOTOR_OFFSET = 12; // Speed difference for left motor (120 + 17 = 137)
-uint16_t forward_duration_counter = 0; // Counter for forward movement time
-#define FORWARD_DURATION 20   // 20 loops * 50ms/loop = 1000ms
+uint8_t sequenceStep = 0;   // 0=left turn, 1=right turn, 2=done
 
 // Speed control variables
 uint8_t motor_speed = 120;  // Default speed (0-255)
@@ -103,48 +95,14 @@ void test_pwm() {
 }
 
 // Motor direction control
-void motor_forward_straight() {
-    // Set initial motor directions for forward movement
+void motor_forward() {
     PORTA &= ~((1 << MOTOR1_IN1) | (1 << MOTOR2_IN1));
     PORTA |= (1 << MOTOR1_IN2) | (1 << MOTOR2_IN2);
     // set_right_motor_speed(motor_speed);
-	  // set_left_motor_speed(motor_speed+16.5);
-
-    // Record the starting angle for straight-line correction
-    forwardSetpointAngle = currentAngle;
-    isMovingStraight = 1;
-    forward_duration_counter = 0; // Reset duration counter
-    serial_string("Moving FORWARD (straight) for 1000ms...\n");
-}
-
-void correct_straight_path() {
-    if (!isMovingStraight) return;
-
-    forward_duration_counter++;
-    if (forward_duration_counter >= FORWARD_DURATION) {
-        motor_stop();
-        isMovingStraight = 0;
-        serial_string("Forward movement COMPLETE!\n");
-        sequenceStep = 3; // Mark sequence as done
-        return;
-    }
-
-    // Proportional control to maintain a straight line
-    float error = currentAngle - forwardSetpointAngle;
-    int16_t correction = (int16_t)(Kp * error);
-
-    // Calculate new motor speeds with offset
-    int16_t rightSpeed = motor_speed + correction;
-    int16_t leftSpeed = motor_speed + LEFT_MOTOR_OFFSET - correction;
-
-    // Clamp speeds to valid PWM range (0-255)
-    if (rightSpeed > 255) rightSpeed = 255;
-    if (rightSpeed < 0) rightSpeed = 0;
-    if (leftSpeed > 255) leftSpeed = 255;
-    if (leftSpeed < 0) leftSpeed = 0;
-
-    set_right_motor_speed((uint8_t)rightSpeed);
-    set_left_motor_speed((uint8_t)leftSpeed);
+	// set_left_motor_speed(motor_speed+16.5);
+	set_right_motor_speed(motor_speed-20);
+	set_left_motor_speed(motor_speed-20+10);
+	_delay_ms(1000);
 }
 
 void motor_stop() {
@@ -244,14 +202,10 @@ void execute_turn_sequence() {
         // Step 2: Right turn 90°
         start_right_turn();
     }
-    else if (sequenceStep == 2 && !isTurning && !isMovingStraight) {
-        // Step 3: Go forward for 1000ms with correction
-        motor_forward_straight();
-    }
-    else if (sequenceStep == 3) {
+    else if (sequenceStep == 2) {
         // Sequence complete
         serial_string("Turn sequence COMPLETE!\n");
-        sequenceStep = 4; // Mark as finished
+        sequenceStep = 3; // Mark as finished
     }
 }
 
@@ -443,12 +397,10 @@ int main() {
 		}
 		
 		// Handle turning sequence if calibrated
-		if (calibrated && sequenceStep < 4) {
+		if (calibrated && sequenceStep < 3) {
 			if (isTurning) {
 				check_turn_completion();
-			} else if (isMovingStraight) {
-                correct_straight_path();
-            } else {
+			} else {
 				execute_turn_sequence();
 			}
 		}
