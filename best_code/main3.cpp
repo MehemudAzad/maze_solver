@@ -14,18 +14,9 @@
 #define EN_MOTOR2     PD7    // Enable motor 2 (OC2 - Timer2, L298N ENB, Left motor)
 
 
-//! ir sensor
-#define IR_SENSOR_PIN PB0 // Example pin for IR sensor
-
-//! Maze navigation thresholds
-#define FRONT_OBSTACLE_THRESHOLD_CM 13 // Distance in cm to trigger left turn
-#define FRONT2_OBSTACLE_THRESHOLD_CM 20 // Distance in cm to trigger left turn
-#define WALL_DISTANCE_THRESHOLD_CM 40  // Distance threshold for wall detection (left-hand rule)
-#define DELAY_AFTER_LEFT_DETECTION 400   // Duration to move forward after turns
-
 //! angle for turning
-#define ANGLE_LEFT 78
-#define ANGLE_RIGHT 78
+#define ANGLE_LEFT 81
+#define ANGLE_RIGHT 80
 //! sonar code
 #define SONAR_TRIG PD2
 #define SONAR_ECHO PD3
@@ -120,6 +111,14 @@ uint16_t sonar3_get_distance_cm(void) {
     return (uint16_t)(count)*2.3/10; // Calibrated to return values in cm
 }
 
+//! ir sensor
+#define IR_SENSOR_PIN PB0 // Example pin for IR sensor
+
+//! Maze navigation thresholds
+#define FRONT_OBSTACLE_THRESHOLD_CM 13 // Distance in cm to trigger left turn
+#define FRONT2_OBSTACLE_THRESHOLD_CM 15 // Distance in cm to trigger left turn
+#define WALL_DISTANCE_THRESHOLD_CM 25  // Distance threshold for wall detection (left-hand rule)
+#define DELAY_AFTER_LEFT_DETECTION 200   // Duration to move forward after turns
 
 void motor_stop(void);
 void motor_forward(void);
@@ -135,7 +134,6 @@ float startAngle = 0;       // Angle when turn started
 float currentAngle = 0;     // Current roll angle * 0.7
 uint8_t sequenceStep = 0;   // 0=left, 1=right, 2=forward, 3=done
 const int RIGHT_MOTOR_OFFSET = 4; // Speed difference for right motor
-const int LEFT_MOTOR_OFFSET = 4; // Speed difference for left motor
 
 // Turn counter for auto-recalibration
 uint8_t turnCounter = 0;    // Count completed turns
@@ -144,14 +142,14 @@ uint8_t turnCounter = 0;    // Count completed turns
 // Global variables for straight-line control
 uint8_t isMovingStraight = 0; // Flag for straight movement mode
 float forwardSetpointAngle = 0; // Target roll angle for straight movement
-const float Kp = 3;         // Proportional gain for gyro correction (tune if needed)
-const float Kp_avoid = 2;   // Proportional gain for collision avoidance (tune if needed)
+const float Kp = 2.5;         // Proportional gain for gyro correction (tune if needed)
+const float Kp_avoid = 2.0;   // Proportional gain for collision avoidance (tune if needed)
 uint16_t forward_duration_counter = 0; // Counter for forward movement time
 #define FORWARD_DURATION 20   // 20 loops * 50ms/loop = 1000ms
 #define COLLISION_AVOIDANCE_THRESHOLD 5  // Activate avoidance when closer than 5cm
 
 // Speed control variables
-uint8_t motor_speed = 120;  // Default speed (0-255)
+uint8_t motor_speed = 110;  // Default speed (0-255)
 uint8_t speed_increment = 25; // Speed change step
 uint8_t control_mode = 0;   // 0 = Bluetooth, 1 = Gesture
 
@@ -238,7 +236,7 @@ void motor_forward_straight() {
     forwardSetpointAngle = currentAngle;
     isMovingStraight = 1;
     forward_duration_counter = 0; // Reset duration counter
-    // serial_string("Moving FORWARD (straight) for 1000ms...\n");
+    serial_string("Moving FORWARD (straight) for 1000ms...\n");
 }
 
 void correct_straight_path() {
@@ -254,47 +252,39 @@ void correct_straight_path() {
         // Only do gyro correction, collision avoidance, and obstacle avoidance during distance-based movement
         if (front_distance > FRONT2_OBSTACLE_THRESHOLD_CM && front_distance != 0xFFFF) {
             // Collision avoidance logic: steer away if too close to side obstacles
-            // float avoidance_correction = 0;
+            float avoidance_correction = 0;
             
-            // // Check left sensor for collision avoidance
-            // if (left_distance != 0xFFFF && left_distance < COLLISION_AVOIDANCE_THRESHOLD) {
-            //     // Too close to left obstacle - steer RIGHT (positive correction)
-            //     float left_error = COLLISION_AVOIDANCE_THRESHOLD - left_distance;
-            //     avoidance_correction -= Kp_avoid * left_error;
-            //     // serial_string("Left correction: ");
-            //     // serial_num(avoidance_correction);
-            //     // serial_string("\n");
-            //     // serial_string("COLLISION AVOIDANCE: Left obstacle at ");
-            //     // serial_num(left_distance);
-            //     // serial_string("cm - steering RIGHT\n");
-            // }
+            // Check left sensor for collision avoidance
+            if (left_distance != 0xFFFF && left_distance < COLLISION_AVOIDANCE_THRESHOLD) {
+                // Too close to left obstacle - steer RIGHT (positive correction)
+                float left_error = COLLISION_AVOIDANCE_THRESHOLD - left_distance;
+                avoidance_correction += Kp_avoid * left_error;
+                
+                // serial_string("COLLISION AVOIDANCE: Left obstacle at ");
+                // serial_num(left_distance);
+                // serial_string("cm - steering RIGHT\n");
+            }
             
-            // // Check right sensor for collision avoidance
-            // if (right_distance != 0xFFFF && right_distance < COLLISION_AVOIDANCE_THRESHOLD) {
-            //     // Too close to right obstacle - steer LEFT (negative correction)
-            //     float right_error = COLLISION_AVOIDANCE_THRESHOLD - right_distance;
-            //     avoidance_correction += Kp_avoid * right_error;
-            //     // serial_string("Right correction: ");
-            //     // serial_num(avoidance_correction);
-            //     // serial_string("\n");
-            //     // serial_string("COLLISION AVOIDANCE: Right obstacle at ");
-            //     // serial_num(right_distance);
-            //     // serial_string("cm - steering LEFT\n");
-            // }
+            // Check right sensor for collision avoidance
+            if (right_distance != 0xFFFF && right_distance < COLLISION_AVOIDANCE_THRESHOLD) {
+                // Too close to right obstacle - steer LEFT (negative correction)
+                float right_error = COLLISION_AVOIDANCE_THRESHOLD - right_distance;
+                avoidance_correction -= Kp_avoid * right_error;
+                
+                // serial_string("COLLISION AVOIDANCE: Right obstacle at ");
+                // serial_num(right_distance);
+                // serial_string("cm - steering LEFT\n");
+            }
             
             // Gyroscope correction for maintaining straight line
             float gyro_error = currentAngle - forwardSetpointAngle;
             int16_t gyro_correction = (int16_t)(Kp * gyro_error);
-            // serial_string("Gyro correction: ");
-            // serial_num(gyro_correction);
-            // serial_string("\n");
+            
             // Combine collision avoidance and gyro corrections
-            // int16_t total_correction = gyro_correction + (int16_t)avoidance_correction;
-            int16_t total_correction = gyro_correction;
+            int16_t total_correction = gyro_correction + (int16_t)avoidance_correction;
             
             // Calculate new motor speeds with offset for the right motor
             int16_t rightSpeed = motor_speed + RIGHT_MOTOR_OFFSET + total_correction;
-            // int16_t rightSpeed = motor_speed + total_correction;
             int16_t leftSpeed = motor_speed - total_correction;
 
             // Clamp speeds to valid PWM range (0-255)
@@ -336,40 +326,36 @@ void correct_straight_path() {
         // Continue moving straight with gyroscope and collision avoidance correction
         
         // Collision avoidance logic: steer away if too close to side obstacles
-        // float avoidance_correction = 0;
+        float avoidance_correction = 0;
         
-        // // Check left sensor for collision avoidance
-        // if (left_distance != 0xFFFF && left_distance < COLLISION_AVOIDANCE_THRESHOLD) {
-        //     // Too close to left obstacle - steer RIGHT (positive correction)
-        //     float left_error = COLLISION_AVOIDANCE_THRESHOLD - left_distance;
-        //     avoidance_correction -= Kp_avoid * left_error;
+        // Check left sensor for collision avoidance
+        if (left_distance != 0xFFFF && left_distance < COLLISION_AVOIDANCE_THRESHOLD) {
+            // Too close to left obstacle - steer RIGHT (positive correction)
+            float left_error = COLLISION_AVOIDANCE_THRESHOLD - left_distance;
+            avoidance_correction += Kp_avoid * left_error;
             
-        //     // serial_string("left_correction: ");
-        //     // serial_num(avoidance_correction);
-        //     // serial_string("\n");
-        // }
+            // serial_string("COLLISION AVOIDANCE: Left obstacle at ");
+            // serial_num(left_distance);
+            // serial_string("cm - steering RIGHT\n");
+        }
         
-        // // Check right sensor for collision avoidance
-        // if (right_distance != 0xFFFF && right_distance < COLLISION_AVOIDANCE_THRESHOLD) {
-        //     // Too close to right obstacle - steer LEFT (negative correction)
-        //     float right_error = COLLISION_AVOIDANCE_THRESHOLD - right_distance;
-        //     avoidance_correction += Kp_avoid * right_error;
-
-        //     // serial_string("right_correction: ");
-        //     // serial_num(avoidance_correction);
-        //     // serial_string("\n");
-        // }
+        // Check right sensor for collision avoidance
+        if (right_distance != 0xFFFF && right_distance < COLLISION_AVOIDANCE_THRESHOLD) {
+            // Too close to right obstacle - steer LEFT (negative correction)
+            float right_error = COLLISION_AVOIDANCE_THRESHOLD - right_distance;
+            avoidance_correction -= Kp_avoid * right_error;
+            
+            // serial_string("COLLISION AVOIDANCE: Right obstacle at ");
+            // serial_num(right_distance);
+            // serial_string("cm - steering LEFT\n");
+        }
         
         // Gyroscope correction for maintaining straight line
         float gyro_error = currentAngle - forwardSetpointAngle;
         int16_t gyro_correction = (int16_t)(Kp * gyro_error);
-        // serial_string("gyro_correction: ");
-        // serial_num(gyro_correction);
-        // serial_string("\n");
         
         // Combine collision avoidance and gyro corrections
-        // int16_t total_correction = gyro_correction + (int16_t)avoidance_correction;
-        int16_t total_correction = gyro_correction;
+        int16_t total_correction = gyro_correction + (int16_t)avoidance_correction;
 
         // Calculate new motor speeds with offset for the right motor
         int16_t rightSpeed = motor_speed + RIGHT_MOTOR_OFFSET + total_correction;
@@ -391,9 +377,9 @@ void correct_straight_path() {
         // _delay_ms(400);
         motor_stop();
         isMovingStraight = 0;
-        // serial_string("Front blocked, right space available (");
-        // serial_num(right_distance);
-        // serial_string("cm) - Turning RIGHT\n");
+        serial_string("Front blocked, right space available (");
+        serial_num(right_distance);
+        serial_string("cm) - Turning RIGHT\n");
         sequenceStep = 3; // Move to right turn
         _delay_ms(500); // Brief pause
         return;
@@ -402,14 +388,14 @@ void correct_straight_path() {
     // Priority 4: Dead end - all sides blocked, turn right (180° turn logic)
     motor_stop();
     isMovingStraight = 0;
-    // serial_string("Dead end detected - All sides blocked! Turning RIGHT\n");
-    // serial_string("Distances: L=");
-    // serial_num(left_distance);
-    // serial_string(", F=");
-    // serial_num(front_distance);
-    // serial_string(", R=");
-    // serial_num(right_distance);
-    // serial_string("\n");
+    serial_string("Dead end detected - All sides blocked! Turning RIGHT\n");
+    serial_string("Distances: L=");
+    serial_num(left_distance);
+    serial_string(", F=");
+    serial_num(front_distance);
+    serial_string(", R=");
+    serial_num(right_distance);
+    serial_string("\n");
     sequenceStep = 5; // Move to dead end right turn (no forward movement after)
     _delay_ms(500); // Brief pause
 }
@@ -433,7 +419,7 @@ void motor_right() {
     // serial_string("inside motor right");
     PORTA &= ~((1 << MOTOR1_IN1) | (1 << MOTOR2_IN2));
     PORTA |= (1 << MOTOR1_IN2) | (1 << MOTOR2_IN1);
-    set_right_motor_speed(motor_speed+12); // Slower right motor
+    set_right_motor_speed(motor_speed+10); // Slower right motor
     set_left_motor_speed(motor_speed+10);      // Full speed left motor
 }
 // void motor_left() {
@@ -459,9 +445,9 @@ void start_left_turn() {
     isTurning = 1;
     motor_left();  // Start turning left
     // _delay_ms(1000);
-    // serial_string("Starting LEFT turn from angle: ");
-    // serial_num((int16_t)startAngle);
-    // serial_string("°\n");
+    serial_string("Starting LEFT turn from angle: ");
+    serial_num((int16_t)startAngle);
+    serial_string("°\n");
 }
 
 void start_right_turn() {
@@ -469,9 +455,9 @@ void start_right_turn() {
     isTurning = 2;
     motor_right(); // Start turning right
     // _delay_ms(1000);
-    // serial_string("Starting RIGHT turn from angle: ");
-    // serial_num((int16_t)startAngle);
-    // serial_string("°\n");
+    serial_string("Starting RIGHT turn from angle: ");
+    serial_num((int16_t)startAngle);
+    serial_string("°\n");
 }
 
 void check_turn_completion() {
@@ -519,7 +505,7 @@ void check_turn_completion() {
                 serial_string("Dead end turn complete - resuming navigation\n");
             } else {
                 // Normal right turn - do forward movement
-                // serial_string("tuhin");
+                serial_string("tuhin");
                 sequenceStep = 4; // Move to brief forward movement after right turn
             }
             
@@ -575,7 +561,7 @@ void execute_turn_sequence() {
         }
         
         // Stop after moving ~25cm or if we detect an obstacle ahead
-        if (distance_moved >= 38 || 
+        if (distance_moved >= 25 || 
             (front_distance <= FRONT2_OBSTACLE_THRESHOLD_CM && front_distance != 0xFFFF)) {
             
             motor_stop();
@@ -596,7 +582,7 @@ void execute_turn_sequence() {
     }
     else if (sequenceStep == 4 && !isTurning && !isMovingStraight) {
         // Distance-based forward movement after right turn with gyro assistance
-        // serial_string("Moving forward 25cm after right turn with gyro assistance...\n");
+        serial_string("Moving forward 25cm after right turn with gyro assistance...\n");
         
         // Start gyro-assisted forward movement
         motor_forward_straight(); // This sets isMovingStraight = 1 and starts gyro correction
@@ -607,10 +593,10 @@ void execute_turn_sequence() {
         // We'll use a new sequence step for distance monitoring
         sequenceStep = 7; // New step for distance-based forward movement after right turn
 
-        // serial_string("sequence step : ");
-        // serial_num(sequenceStep);
-        // serial_string(" isMovingStraight: ");
-        // serial_num(isMovingStraight);
+        serial_string("sequence step : ");
+        serial_num(sequenceStep);
+        serial_string(" isMovingStraight: ");
+        serial_num(isMovingStraight);
     }
     else if (sequenceStep == 7 && isMovingStraight) {
         // Monitor distance during forward movement after right turn
@@ -633,9 +619,9 @@ void execute_turn_sequence() {
         if (initial_front_distance_right > front_distance && front_distance != 0xFFFF) {
             distance_moved = initial_front_distance_right - front_distance;
         }
-
-        // Stop after moving ~31cm or if we detect an obstacle ahead
-        if (distance_moved >= 38|| 
+        
+        // Stop after moving ~25cm or if we detect an obstacle ahead
+        if (distance_moved >= 25 || 
             (front_distance <= FRONT2_OBSTACLE_THRESHOLD_CM && front_distance != 0xFFFF)) {
             
             motor_stop();

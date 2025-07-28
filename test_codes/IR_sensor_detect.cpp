@@ -17,10 +17,7 @@
 #define SONAR2_TRIG PD4
 #define SONAR2_ECHO PD5
 
-#define SONAR3_TRIG PB1
-#define SONAR3_ECHO PB2
-
-#define IR_SENSOR_PIN PB1 // Example pin for IR sensor
+#define IR_SENSOR_PIN PB0 // Example pin for IR sensor
 void motor_stop(void);
 void motor_forward(void);
 void motor_reverse(void);
@@ -119,11 +116,6 @@ void sonar2_init(void) {
     DDRD &= ~(1 << SONAR2_ECHO); // ECHO2 as input
 }
 
-void sonar3_init(void) {
-    DDRB |= (1 << SONAR3_TRIG);  // TRIG3 as output
-    DDRB &= ~(1 << SONAR3_ECHO); // ECHO3 as input
-}
-
 uint16_t sonar_get_distance_cm(void) {
     // Send 10us pulse to TRIG
     PORTD &= ~(1 << SONAR_TRIG);
@@ -147,7 +139,7 @@ uint16_t sonar_get_distance_cm(void) {
     }
 
     // Sound speed: 343 m/s, so distance (cm) = (time_us / 58)
-    return (uint16_t)(count)*2.3/10; // Calibrated to return values in cm
+    return (uint16_t)(count );
 }
 
 uint16_t sonar2_get_distance_cm(void) {
@@ -167,52 +159,16 @@ uint16_t sonar2_get_distance_cm(void) {
         _delay_us(1);
         if (count > 30000) return 0xFFFF;
     }
-    return (uint16_t)(count)*2.3/10;
+    return (uint16_t)(count);
 }
-//get distance from front sonar
-uint16_t sonar3_get_distance_cm(void) {
-    PORTB &= ~(1 << SONAR3_TRIG);
-    _delay_us(2);
-    PORTB |= (1 << SONAR3_TRIG);
-    _delay_us(10);
-    PORTB &= ~(1 << SONAR3_TRIG);
-
-    uint32_t timeout = 30000;
-    while (!(PINB & (1 << SONAR3_ECHO))) {
-        if (--timeout == 0) return 0xFFFF;
-    }
-    uint32_t count = 0;
-    while (PINB & (1 << SONAR3_ECHO)) {
-        count++;
-        _delay_us(1);
-        if (count > 30000) return 0xFFFF;
-    }
-    return (uint16_t)(count)*2.3/10; // Calibrated to return values in cm
-}
-
-
-// uint16_t front_sonar_get_distance_cm(void) {
-//     PORTD &= ~(1 << SONAR3_TRIG);
-//     _delay_us(2);
-//     PORTD |= (1 << SONAR3_TRIG);
-//     _delay_us(10);
-//     PORTD &= ~(1 << SONAR3_TRIG);
-
-//     uint32_t timeout = 30000;
-//     while (!(PIND & (1 << SONAR3_ECHO))) {
-//         if (--timeout == 0) return 0xFFFF;
-//     }
-//     uint32_t count = 0;
-//     while (PIND & (1 << SONAR3_ECHO)) {
-//         count++;
-//         _delay_us(1);
-//         if (count > 30000) return 0xFFFF;
-//     }
-//     return (uint16_t)(count);
-// }
 
 uint8_t ir_sensor_read(void) {
-	return (PINC & (1 << IR_SENSOR_PIN)) ? 1 : 0;
+    // Configure IR sensor pin as input with pull-up
+    DDRB &= ~(1 << IR_SENSOR_PIN);  // Set as input
+    PORTB |= (1 << IR_SENSOR_PIN);  // Enable pull-up resistor
+    
+    // Read the sensor (0 = obstacle detected, 1 = no obstacle)
+    return (PINB & (1 << IR_SENSOR_PIN)) ? 1 : 0;
 }
 void pwm_init() {
     DDRB |= (1 << EN_MOTOR1);  // PB3 (OC0) - Right motor ENA
@@ -269,15 +225,43 @@ void test_pwm() {
     serial_string("PWM test complete\n");
 }
 
-// Motor direction control
+// Motor direction control with IR sensor obstacle detection
 void motor_forward() {
     PORTA &= ~((1 << MOTOR1_IN1) | (1 << MOTOR2_IN1));
     PORTA |= (1 << MOTOR1_IN2) | (1 << MOTOR2_IN2);
-    // set_right_motor_speed(motor_speed);
-	// set_left_motor_speed(motor_speed+16.5);
-	set_right_motor_speed(motor_speed-20);
-	set_left_motor_speed(motor_speed-20+10);
-	_delay_ms(1000);
+    set_right_motor_speed(motor_speed + 4);
+    set_left_motor_speed(motor_speed);
+}
+
+// Safe motor forward with continuous IR sensor monitoring
+void motor_forward_with_ir_check() {
+    // Start moving forward
+    motor_forward();
+    
+    serial_string("Moving forward with IR obstacle detection...\n");
+    
+    // Continue moving until obstacle detected or stopped manually
+    while (1) {
+        // Check IR sensor (assuming 0 = obstacle detected, 1 = no obstacle)
+        if (ir_sensor_read() == 0) {
+            motor_stop();
+            serial_string("*** OBSTACLE DETECTED! Car stopped by IR sensor ***\n");
+            break;
+        }
+        
+        // Small delay for sensor reading
+        _delay_ms(50);
+        
+        // Check if there's a new command to stop
+        if (serial_available()) {
+            char cmd = serial_read();
+            if (cmd == 'S' || cmd == 's') {
+                motor_stop();
+                serial_string("Manual stop command received\n");
+                break;
+            }
+        }
+    }
 }
 
 void motor_stop() {
@@ -289,8 +273,8 @@ void motor_reverse() {
 	PORTA &= ~((1 << MOTOR1_IN2) | (1 << MOTOR2_IN2));
     PORTA |= (1 << MOTOR1_IN1) | (1 << MOTOR2_IN1);
     set_motor_speed(motor_speed);
-	set_right_motor_speed(motor_speed-20);
-	set_left_motor_speed(motor_speed+16.5-20);
+	  set_right_motor_speed(motor_speed);
+	  set_left_motor_speed(motor_speed+16.5);
 	_delay_ms(1000);
 }
 
@@ -310,16 +294,44 @@ void motor_left() {
     // _delay_ms(500);
 }
 
-// Stub for autonomous behavior
+// Enhanced autonomous mode with IR sensor obstacle detection
 static void autonomous_mode(void) {
-    motor_forward();
-    _delay_ms(2000);
-    motor_stop();
-    _delay_ms(1000);
-    motor_left();
-    _delay_ms(1000);
-    motor_stop();
-    _delay_ms(1000);
+    serial_string("=== AUTONOMOUS MODE WITH IR OBSTACLE DETECTION ===\n");
+    
+    while (1) {
+        // Move forward with IR sensor monitoring
+        serial_string("Phase 1: Moving forward...\n");
+        motor_forward_with_ir_check();
+
+        _delay_ms(500); // Brief pause before checking for obstacles
+        // If we reach here, obstacle was detected
+        // serial_string("Phase 2: Obstacle detected, backing up...\n");
+        // motor_reverse();
+        // _delay_ms(1000);  // Back up for 1 second
+        // motor_stop();
+
+        // _delay_ms(500); // Pause before turning
+        
+        serial_string("Phase 3: Turning to avoid obstacle...\n");
+        motor_right();
+        _delay_ms(800);   // Turn right for 0.8 seconds
+        motor_stop();
+        
+        serial_string("Phase 4: Brief pause before continuing...\n");
+        _delay_ms(500);   // Brief pause
+        
+        // Check if user wants to exit autonomous mode
+        if (serial_available()) {
+            char cmd = serial_read();
+            if (cmd == 's' || cmd == 'S') {
+                serial_string("Exiting autonomous mode\n");
+                motor_stop();
+                break;
+            }
+        }
+        
+        // Continue the loop - will start moving forward again
+    }
 }
 
 int main(void) {
@@ -329,12 +341,15 @@ int main(void) {
     motor_init();
 	sonar_init(); // Initialize sonar sensor
 	sonar2_init();
-	sonar3_init();
     motor_stop();
     serial_string("Motor control with PWM speed ready!\n");
-    serial_string("Commands: F(forward), B(reverse), L(left), R(right), S(stop)\n");
-    serial_string("Speed: +(increase), -(decrease), 0-9(set speed level)\n");
-    serial_string("G: Gesture mode toggle\n");
+    serial_string("Commands:\n");
+    serial_string("F - Forward with IR obstacle detection\n");
+    serial_string("f - Forward without IR detection\n");
+    serial_string("B - Reverse, L - Left, R - Right, S - Stop\n");
+    serial_string("a - Autonomous mode with IR obstacle avoidance\n");
+    serial_string("I - Check IR sensor, D - Check distance sensors\n");
+    serial_string("0-9 - Set speed level, T - Test PWM\n");
     serial_string("Current speed: ");
     serial_num(motor_speed);
     serial_string("\n");
@@ -353,22 +368,11 @@ int main(void) {
         if (serial_available()) {
             cmd = serial_read();
 
-            // Stop car if IR sensor is triggered
-            if (ir_sensor_read() == 0) {
-                motor_stop();
-                serial_string("IR sensor triggered: Stopping car\n");
-                continue;
-            }
-
             if (cmd == 'a') {
                 auto_mode = 1;
-                serial_string("Entering autonomous mode\n");
-                continue;
-            }
-            if (cmd == 's' && auto_mode) {
-                auto_mode = 0;
-                serial_string("Exiting autonomous mode\n");
-                motor_stop();
+                serial_string("Entering autonomous mode with IR obstacle detection\n");
+                autonomous_mode();  // Call autonomous mode directly
+                auto_mode = 0;      // Reset when done
                 continue;
             }
             if (cmd == 'G' || cmd == 'g') {
@@ -378,14 +382,13 @@ int main(void) {
                 motor_stop();
                 continue;
             }
-            if (auto_mode) {
-                autonomous_mode();
-                continue;
-            }
             switch (cmd) {
                 case 'F':
+                    motor_forward_with_ir_check();  // Use IR-protected forward
+                    break;
+                case 'f':  // Lowercase 'f' for normal forward without IR check
                     motor_forward();
-                    serial_string("Moving forward at speed ");
+                    serial_string("Moving forward (IR check disabled) at speed ");
                     serial_num(motor_speed);
                     serial_string("\n");
                     break;
@@ -417,17 +420,13 @@ int main(void) {
                     serial_string("\n");
                     break;
 				case 'D': // Distance
-					          uint16_t dist2 = sonar2_get_distance_cm();
+					uint16_t dit2 = sonar2_get_distance_cm();
                     uint16_t dist = sonar_get_distance_cm();
-                    uint16_t dist3 = sonar3_get_distance_cm();
-                    serial_string("Distance 1 left: ");
+                    serial_string("Distance: ");
                     serial_num(dist);
                     serial_string(" cm\n");
-					serial_string(" cm, Distance 2 right: ");
-					serial_num(dist2);
-					serial_string(" cm\n");
-					serial_string(" cm, Distance 3 front: ");
-					serial_num(dist3);
+					serial_string(" cm, Distance 2: ");
+					serial_num(dit2);
 					serial_string(" cm\n");
                     break;
 

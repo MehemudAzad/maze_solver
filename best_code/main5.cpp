@@ -15,7 +15,8 @@
 
 
 //! ir sensor
-#define IR_SENSOR_PIN PB0 // Example pin for IR sensor
+#define IR_SENSOR_LEFT_PIN PA5  // Left IR sensor (green)
+#define IR_SENSOR_RIGHT_PIN PA6 // Right IR sensor (red)
 
 //! Maze navigation thresholds
 #define FRONT_OBSTACLE_THRESHOLD_CM 13 // Distance in cm to trigger left turn
@@ -24,7 +25,7 @@
 #define DELAY_AFTER_LEFT_DETECTION 400   // Duration to move forward after turns
 
 //! angle for turning
-#define ANGLE_LEFT 78
+#define ANGLE_LEFT 80
 #define ANGLE_RIGHT 78
 //! sonar code
 #define SONAR_TRIG PD2
@@ -155,20 +156,36 @@ uint8_t motor_speed = 120;  // Default speed (0-255)
 uint8_t speed_increment = 25; // Speed change step
 uint8_t control_mode = 0;   // 0 = Bluetooth, 1 = Gesture
 
+// IR collision avoidance variables
+uint8_t isInCollisionAvoidance = 0;  // Flag to indicate collision avoidance mode
+uint8_t collisionAvoidanceStep = 0;  // Step in collision avoidance sequence
+float collisionStartAngle = 0;       // Angle when collision avoidance started
+#define IR_COLLISION_TURN_ANGLE 10   // 10-degree turn for collision avoidance
+
 // Distance tracking for post-turn movement
 uint16_t initial_front_distance_left = 0;
 uint8_t distance_initialized_left = 0;
 uint16_t initial_front_distance_right = 0;
 uint8_t distance_initialized_right = 0;
 
-uint8_t ir_sensor_read(void) {
-    // Configure IR sensor pin as input with pull-up
-    DDRB &= ~(1 << IR_SENSOR_PIN);  // Set as input
-    PORTB |= (1 << IR_SENSOR_PIN);  // Enable pull-up resistor
+// Read left IR sensor (PA5)
+uint8_t ir_sensor_left_read(void) {
+    // Configure left IR sensor pin as input with pull-up
+    DDRA &= ~(1 << IR_SENSOR_LEFT_PIN);  // Set as input
+    PORTA |= (1 << IR_SENSOR_LEFT_PIN);  // Enable pull-up resistor
  
     // Read the sensor (0 = obstacle detected, 1 = no obstacle)
-    return (PINB & (1 << IR_SENSOR_PIN)) ? 1 : 0;
+    return (PINA & (1 << IR_SENSOR_LEFT_PIN)) ? 1 : 0;
+}
 
+// Read right IR sensor (PA6)
+uint8_t ir_sensor_right_read(void) {
+    // Configure right IR sensor pin as input with pull-up
+    DDRA &= ~(1 << IR_SENSOR_RIGHT_PIN);  // Set as input
+    PORTA |= (1 << IR_SENSOR_RIGHT_PIN);  // Enable pull-up resistor
+ 
+    // Read the sensor (0 = obstacle detected, 1 = no obstacle)
+    return (PINA & (1 << IR_SENSOR_RIGHT_PIN)) ? 1 : 0;
 }
 
 void pwm_init() {
@@ -243,6 +260,25 @@ void motor_forward_straight() {
 
 void correct_straight_path() {
     if (!isMovingStraight) return;
+
+    // Check IR sensors for immediate collision avoidance (highest priority)
+    if (!isInCollisionAvoidance) {
+        uint8_t left_ir = ir_sensor_left_read();
+        uint8_t right_ir = ir_sensor_right_read();
+        
+        if (left_ir == 0) { // Left IR sensor triggered (obstacle detected)
+            motor_stop();
+            isMovingStraight = 0;
+            start_ir_collision_avoidance_left();
+            return;
+        }
+        else if (right_ir == 0) { // Right IR sensor triggered (obstacle detected)
+            motor_stop();
+            isMovingStraight = 0;
+            start_ir_collision_avoidance_right();
+            return;
+        }
+    }
 
     // Left-hand rule maze navigation algorithm
     uint16_t left_distance = sonar_get_distance_cm();     // Left sensor
@@ -420,14 +456,12 @@ void motor_stop() {
     OCR0 = 0;  // Left motor
 }
 
-// void motor_reverse() {
-// 	PORTA &= ~((1 << MOTOR1_IN2) | (1 << MOTOR2_IN2));
-//     PORTA |= (1 << MOTOR1_IN1) | (1 << MOTOR2_IN1);
-//     set_motor_speed(motor_speed);
-// 	set_right_motor_speed(motor_speed-20);
-// 	set_left_motor_speed(motor_speed+16.5-20);
-// 	_delay_ms(1000);
-// }
+void motor_reverse() {
+    PORTA &= ~((1 << MOTOR1_IN2) | (1 << MOTOR2_IN2));
+    PORTA |= (1 << MOTOR1_IN1) | (1 << MOTOR2_IN1);
+    set_right_motor_speed(motor_speed + RIGHT_MOTOR_OFFSET);
+    set_left_motor_speed(motor_speed);
+}
 
 void motor_right() {
     // serial_string("inside motor right");
@@ -474,7 +508,77 @@ void start_right_turn() {
     // serial_string("°\n");
 }
 
+// IR Collision Avoidance Functions
+void start_ir_collision_avoidance_left() {
+    // Left IR sensor triggered - reverse and turn right 10 degrees
+    serial_string("LEFT IR triggered - reversing and turning RIGHT\n");
+    isInCollisionAvoidance = 1;
+    collisionAvoidanceStep = 1; // 1 = reverse, 2 = turn right
+    collisionStartAngle = currentAngle;
+    motor_reverse();
+    _delay_ms(300); // Reverse for 300ms
+}
+
+void start_ir_collision_avoidance_right() {
+    // Right IR sensor triggered - reverse and turn left 10 degrees
+    serial_string("RIGHT IR triggered - reversing and turning LEFT\n");
+    isInCollisionAvoidance = 1;
+    collisionAvoidanceStep = 3; // 3 = reverse, 4 = turn left
+    collisionStartAngle = currentAngle;
+    motor_reverse();
+    _delay_ms(300); // Reverse for 300ms
+}
+
+void check_ir_collision_avoidance() {
+    if (collisionAvoidanceStep == 1) {
+        // Start right turn after reverse (left IR triggered)
+        collisionAvoidanceStep = 2;
+        startAngle = currentAngle;
+        isTurning = 2; // Right turn
+        motor_right();
+        serial_string("Starting 10-degree RIGHT turn after reverse\n");
+    }
+    else if (collisionAvoidanceStep == 2) {
+        // Check if 10-degree right turn is complete
+        float angleDiff = startAngle - currentAngle;
+        if (angleDiff >= IR_COLLISION_TURN_ANGLE) {
+            motor_stop();
+            isTurning = 0;
+            isInCollisionAvoidance = 0;
+            collisionAvoidanceStep = 0;
+            serial_string("IR collision avoidance RIGHT turn complete\n");
+            _delay_ms(200);
+        }
+    }
+    else if (collisionAvoidanceStep == 3) {
+        // Start left turn after reverse (right IR triggered)
+        collisionAvoidanceStep = 4;
+        startAngle = currentAngle;
+        isTurning = 1; // Left turn
+        motor_left();
+        serial_string("Starting 10-degree LEFT turn after reverse\n");
+    }
+    else if (collisionAvoidanceStep == 4) {
+        // Check if 10-degree left turn is complete
+        float angleDiff = currentAngle - startAngle;
+        if (angleDiff >= IR_COLLISION_TURN_ANGLE) {
+            motor_stop();
+            isTurning = 0;
+            isInCollisionAvoidance = 0;
+            collisionAvoidanceStep = 0;
+            serial_string("IR collision avoidance LEFT turn complete\n");
+            _delay_ms(200);
+        }
+    }
+}
+
 void check_turn_completion() {
+    // Handle IR collision avoidance turns separately
+    if (isInCollisionAvoidance) {
+        check_ir_collision_avoidance();
+        return;
+    }
+    
     if (isTurning == 1) { // Left turn
         float angleDiff = currentAngle - startAngle;
         
@@ -534,6 +638,25 @@ void check_turn_completion() {
 }
 
 void execute_turn_sequence() {
+    // Check IR sensors for collision avoidance (highest priority)
+    if (!isInCollisionAvoidance && !isTurning) {
+        uint8_t left_ir = ir_sensor_left_read();
+        uint8_t right_ir = ir_sensor_right_read();
+        
+        if (left_ir == 0) { // Left IR sensor triggered (obstacle detected)
+            motor_stop();
+            isMovingStraight = 0;
+            start_ir_collision_avoidance_left();
+            return;
+        }
+        else if (right_ir == 0) { // Right IR sensor triggered (obstacle detected)
+            motor_stop();
+            isMovingStraight = 0;
+            start_ir_collision_avoidance_right();
+            return;
+        }
+    }
+    
     if (sequenceStep == 0 && !isTurning && !isMovingStraight) {
         // Start moving forward and continuously check for left-hand rule decisions
         motor_forward_straight();
@@ -1043,6 +1166,20 @@ int main() {
 					serial_string(" [OBSTACLE DETECTED!]");
 				}
 				serial_string("\n");
+			} else if (cmd == 'I' || cmd == 'i') {
+				// Test IR sensors
+				uint8_t left_ir = ir_sensor_left_read();
+				uint8_t right_ir = ir_sensor_right_read();
+				
+				serial_string("IR sensors - Left: ");
+				serial_num(left_ir);
+				serial_string(" (");
+				serial_string(left_ir ? "CLEAR" : "OBSTACLE");
+				serial_string("), Right: ");
+				serial_num(right_ir);
+				serial_string(" (");
+				serial_string(right_ir ? "CLEAR" : "OBSTACLE");
+				serial_string(")\n");
 			}
 		}
     

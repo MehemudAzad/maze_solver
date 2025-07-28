@@ -27,14 +27,28 @@ void motor_right(void);
 void set_right_motor_speed(uint8_t speed);
 void set_left_motor_speed(uint8_t speed);
 
-// Global variables for straight-line control only
+// Global variables for turning control
+uint8_t isTurning = 0;      // 0=not turning, 1=left turn, 2=right turn
+float startAngle = 0;       // Angle when turn started
 float currentAngle = 0;     // Current roll angle * 0.7
-float forwardSetpointAngle = 0; // Target roll angle for straight movement
-const float Kp = 2.5;         // Proportional gain for correction (tune if needed)
-const int RIGHT_MOTOR_OFFSET = 4; // Speed difference for right motor
+uint8_t sequenceStep = 0;   // 0=left turn, 1=right turn, 2=done
+
+// PID control variables for precise turning
+float targetAngle = 0;      // Target angle for current turn
+float previousError = 0;    // Previous error for derivative calculation
+// float integral = 0;         // Integral sum for PID
+float KP = 2.5;            // Proportional gain
+// float KI = 0.1;            // Integral gain
+float KD = 1.0;            // Derivative gainz
+float turnTolerance = 3.0;  // Acceptable error in degrees
+uint8_t turnComplete = 0;   // Flag to indicate turn completion
 
 // Speed control variables
 uint8_t motor_speed = 120;  // Default speed (0-255)
+uint8_t speed_increment = 25; // Speed change step
+uint8_t control_mode = 0;   // 0 = Bluetooth, 1 = Gesture
+uint8_t minTurnSpeed = 85;  // Minimum turning speed
+uint8_t maxTurnSpeed = 120; // Maximum turning speed
 
 
 void pwm_init() {
@@ -92,28 +106,15 @@ void test_pwm() {
     serial_string("PWM test complete\n");
 }
 
-// Motor direction control - continuous straight movement with gyro correction
-void motor_forward_straight() {
-    // Set motor directions for forward movement
+// Motor direction control
+void motor_forward() {
     PORTA &= ~((1 << MOTOR1_IN1) | (1 << MOTOR2_IN1));
     PORTA |= (1 << MOTOR1_IN2) | (1 << MOTOR2_IN2);
-    
-    // Proportional control to maintain a straight line using gyro
-    float error = currentAngle - forwardSetpointAngle;
-    int16_t correction = (int16_t)(Kp * error);
-
-    // Calculate new motor speeds with offset for the right motor
-    int16_t rightSpeed = motor_speed + RIGHT_MOTOR_OFFSET + correction;
-    int16_t leftSpeed = motor_speed - correction;
-
-    // Clamp speeds to valid PWM range (0-255)
-    if (rightSpeed > 255) rightSpeed = 255;
-    if (rightSpeed < 0) rightSpeed = 0;
-    if (leftSpeed > 255) leftSpeed = 255;
-    if (leftSpeed < 0) leftSpeed = 0;
-
-    set_right_motor_speed((uint8_t)rightSpeed);
-    set_left_motor_speed((uint8_t)leftSpeed);
+    // set_right_motor_speed(motor_speed);
+	// set_left_motor_speed(motor_speed+16.5);
+	set_right_motor_speed(motor_speed-20);
+	set_left_motor_speed(motor_speed-20+10);
+	_delay_ms(1000);
 }
 
 void motor_stop() {
@@ -137,6 +138,14 @@ void motor_right() {
     set_right_motor_speed(motor_speed); // Slower right motor
     set_left_motor_speed(motor_speed);      // Full speed left motor
 }
+// void motor_left() {
+// 	PORTA &= ~((1 << MOTOR1_IN2) | (1 << MOTOR2_IN1));
+//     PORTA |= (1 << MOTOR1_IN1) | (1 << MOTOR2_IN2);
+//     set_right_motor_speed(motor_speed);     // Full speed right motor
+//     set_left_motor_speed(motor_speed);  // Slower left motor
+//     // _delay_ms(500);
+// }
+
 
 void motor_left() {
     serial_string("inside motor left");
@@ -144,6 +153,144 @@ void motor_left() {
     PORTA |= (1 << MOTOR1_IN1) | (1 << MOTOR2_IN2);
     set_right_motor_speed(motor_speed);     // Full speed right motor
     set_left_motor_speed(motor_speed);  // Slower left motor
+}
+
+// PID-controlled motor functions for precise turning
+void motor_left_pid(uint8_t speed) {
+    PORTA &= ~((1 << MOTOR1_IN2) | (1 << MOTOR2_IN1));
+    PORTA |= (1 << MOTOR1_IN1) | (1 << MOTOR2_IN2);
+    set_right_motor_speed(speed);
+    set_left_motor_speed(speed);
+}
+
+void motor_right_pid(uint8_t speed) {
+    PORTA &= ~((1 << MOTOR1_IN1) | (1 << MOTOR2_IN2));
+    PORTA |= (1 << MOTOR1_IN2) | (1 << MOTOR2_IN1);
+    set_right_motor_speed(speed);
+    set_left_motor_speed(speed);
+}
+
+// Precise 90-degree turning functions with PID control
+void start_left_turn() {
+    startAngle = currentAngle;
+    targetAngle = startAngle + 90.0;  // Target is 90 degrees from start
+    isTurning = 1;
+    turnComplete = 0;
+    previousError = 0;
+    // integral = 0;
+    
+    serial_string("Starting LEFT turn from angle: ");
+    serial_num((int16_t)startAngle);
+    serial_string("° to target: ");
+    serial_num((int16_t)targetAngle);
+    serial_string("°\n");
+}
+
+void start_right_turn() {
+    startAngle = currentAngle;
+    targetAngle = startAngle - 90.0;  // Target is 90 degrees from start
+    isTurning = 2;
+    turnComplete = 0;
+    previousError = 0;
+    // integral = 0;
+    
+    serial_string("Starting RIGHT turn from angle: ");
+    serial_num((int16_t)startAngle);
+    serial_string("° to target: ");
+    serial_num((int16_t)targetAngle);
+    serial_string("°\n");
+}
+
+void check_turn_completion() {
+    if (isTurning == 0) return;
+    
+    float error = targetAngle - currentAngle;
+    float absError = (error < 0) ? -error : error;
+    
+    // Check if we're within tolerance
+    if (absError <= turnTolerance) {
+        motor_stop();
+        isTurning = 0;
+        turnComplete = 1;
+        serial_string("Turn COMPLETE! Target: ");
+        serial_num((int16_t)targetAngle);
+        serial_string("° Final: ");
+        serial_num((int16_t)currentAngle);
+        serial_string("° Error: ");
+        serial_num((int16_t)error);
+        serial_string("°\n");
+        _delay_ms(500);
+        
+        if (sequenceStep == 0) sequenceStep = 1; // Move to right turn
+        else if (sequenceStep == 1) sequenceStep = 2; // Mark as done
+        return;
+    }
+    
+    // PD calculations (simplified PID without integral to avoid windup)
+    float derivative = error - previousError;
+    float pdOutput = KP * error + KD * derivative;
+    
+    // Calculate base motor speed based on error magnitude
+    uint8_t turnSpeed;
+    if (absError > 45) {
+        turnSpeed = maxTurnSpeed; // Fast turn when far from target
+    } else if (absError > 20) {
+        turnSpeed = (maxTurnSpeed + minTurnSpeed) / 2; // Medium speed
+    } else {
+        // Use PD output for fine control near target
+        turnSpeed = minTurnSpeed + (absError * 1.5);
+        
+        // Apply PD correction for smooth approach
+        int16_t pdAdjustment = (int16_t)(pdOutput * 0.2); // Scale PD output
+        turnSpeed += pdAdjustment;
+    }
+    
+    // Ensure speed limits
+    if (turnSpeed > maxTurnSpeed) turnSpeed = maxTurnSpeed;
+    if (turnSpeed < minTurnSpeed) turnSpeed = minTurnSpeed;
+    
+    // Apply motor control based on turn direction
+    if (isTurning == 1) { // Left turn
+        motor_left_pid(turnSpeed);
+        serial_string("L-Turn: Angle=");
+        serial_num((int16_t)currentAngle);
+        serial_string("° Error=");
+        serial_num((int16_t)error);
+        serial_string("° Speed=");
+        serial_num(turnSpeed);
+        serial_string("° PD=");
+        serial_num((int16_t)(pdOutput * 10)); // Show PD output scaled for visibility
+        serial_string("\n");
+    } else if (isTurning == 2) { // Right turn
+        motor_right_pid(turnSpeed);
+        serial_string("R-Turn: Angle=");
+        serial_num((int16_t)currentAngle);
+        serial_string("° Error=");
+        serial_num((int16_t)error);
+        serial_string("° Speed=");
+        serial_num(turnSpeed);
+        serial_string("° PD=");
+        serial_num((int16_t)(pdOutput * 10)); // Show PD output scaled for visibility
+        serial_string("\n");
+    }
+    
+    previousError = error;
+}
+
+void execute_turn_sequence() {
+    if (sequenceStep == 0 && !isTurning) {
+        // Step 1: Left turn 90°
+        start_left_turn();
+    }
+    else if (sequenceStep == 1 && !isTurning) {
+        // Step 2: Right turn 90°
+        start_right_turn();
+    }
+    else if (sequenceStep == 2) {
+        // Sequence complete
+        serial_string("Turn sequence COMPLETE!\n");
+        sequenceStep = 3; // Mark as finished
+    }
 }
 
 
@@ -249,6 +396,11 @@ int main() {
   serial_init(9600);
   motor_init();
   motor_stop();
+	// Initialize LED pin (PB0) as output
+	DDRB |= (1 << PB0);  // Set PB0 as output for LED
+	DDRB |= (1 << PB1);  // Set PB1 as output for LED
+	PORTB &= ~(1 << PB0); // Initially turn off LED
+	PORTB &= ~(1 << PB1); // Initially turn off LED
 	
 	TWI_Init();
 	MPU6050_Init();
@@ -276,12 +428,10 @@ int main() {
 	
 	char cmd;
 	uint8_t calibrated = 0;
-	uint8_t straightTestActive = 0;
 
-	serial_string("Gyro Straight-Line Test Ready\n");
+	serial_string("MPU6050 Advanced Angle Sensor Ready\n");
 	serial_string("Press 'C' to calibrate (keep stationary!)\n");
-	serial_string("Press 'S' to start straight movement test\n");
-	serial_string("Press 'T' to stop the test\n");
+	serial_string("Press 'G' to get angles and sensor data\n");
 
 	// Initialize timing with a simple millisecond counter
 	currentTime_ms = 0;
@@ -330,9 +480,13 @@ int main() {
 			currentAngle = roll * 0.7;
 		}
 		
-		// Continuous straight movement test
-		if (calibrated && straightTestActive) {
-			motor_forward_straight();
+		// Handle turning sequence if calibrated
+		if (calibrated && sequenceStep < 3) {
+			if (isTurning) {
+				check_turn_completion();
+			} else {
+				execute_turn_sequence();
+			}
 		}
 		
 		// Check for bluetooth commands
@@ -341,8 +495,6 @@ int main() {
 			
 			if (cmd == 'C' || cmd == 'c') {
 				serial_string("Calibrating... Keep sensor stationary!\n");
-				motor_stop();
-				straightTestActive = 0;
 				
 				// Reset error values
 				AccErrorX = 0; AccErrorY = 0;
@@ -386,35 +538,24 @@ int main() {
 				currentTime_ms = 0;
 				previousTime_ms = 0;
 				
+				// Reset sequence to start from beginning
+				sequenceStep = 0;
+				isTurning = 0;
+				
 				calibrated = 1;
 				serial_string("Calibration complete!\n");
-				serial_string("Ready for straight-line test. Press 'S' to start.\n");
+				serial_string("Starting turn sequence: LEFT 90° → RIGHT 90°\n");
 				
-			} else if (cmd == 'S' || cmd == 's') {
-				if (calibrated) {
-					forwardSetpointAngle = currentAngle; // Set current angle as target
-					straightTestActive = 1;
-					serial_string("Starting continuous straight movement test...\n");
-					serial_string("Target angle: ");
-					serial_num((int16_t)forwardSetpointAngle);
-					serial_string("°\n");
-				} else {
-					serial_string("Please calibrate first (press 'C')\n");
-				}
-			} else if (cmd == 'T' || cmd == 't') {
-				motor_stop();
-				straightTestActive = 0;
-				serial_string("Straight movement test STOPPED.\n");
 			} else if (cmd == 'G' || cmd == 'g') {
 				if (calibrated) {
 					serial_string("Current angle: ");
 					serial_num((int16_t)currentAngle);
-					serial_string("° | Target: ");
-					serial_num((int16_t)forwardSetpointAngle);
-					serial_string("° | Error: ");
-					serial_num((int16_t)(currentAngle - forwardSetpointAngle));
-					serial_string("° | Test: ");
-					serial_num(straightTestActive);
+					serial_string("° | Roll: ");
+					serial_num((int16_t)roll);
+					serial_string("° | Step: ");
+					serial_num(sequenceStep);
+					serial_string(" | Turning: ");
+					serial_num(isTurning);
 					serial_string("\n");
 				} else {
 					serial_string("Please calibrate first (press 'C')\n");
