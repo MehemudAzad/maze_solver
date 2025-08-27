@@ -1,6 +1,4 @@
 #!/bin/bash
-
-
 cd .pio
 cd build
 cd atmega32
