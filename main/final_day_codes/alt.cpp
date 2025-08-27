@@ -19,13 +19,13 @@
 
 //! Maze navigation thresholds
 #define FRONT_OBSTACLE_THRESHOLD_CM 13 // Distance in cm to trigger left turn
-#define FRONT2_OBSTACLE_THRESHOLD_CM 23 // Distance in cm to trigger left turn
+#define FRONT2_OBSTACLE_THRESHOLD_CM 20 // Distance in cm to trigger left turn
 #define WALL_DISTANCE_THRESHOLD_CM 40  // Distance threshold for wall detection (left-hand rule)
 #define DELAY_AFTER_LEFT_DETECTION 400   // Duration to move forward after turns
 
 //! angle for turning
-#define ANGLE_LEFT 75
-#define ANGLE_RIGHT 75
+#define ANGLE_LEFT 78
+#define ANGLE_RIGHT 77
 //! sonar code
 #define SONAR_TRIG PD2
 #define SONAR_ECHO PD3
@@ -129,13 +129,12 @@ void motor_right(void);
 void set_right_motor_speed(uint8_t speed);
 void set_left_motor_speed(uint8_t speed);
 
-
 // Global variables for turning control
 uint8_t isTurning = 0;      // 0=not turning, 1=left turn, 2=right turn
 float startAngle = 0;       // Angle when turn started
 float currentAngle = 0;     // Current roll angle * 0.7
 uint8_t sequenceStep = 0;   // 0=left, 1=right, 2=forward, 3=done
-const int RIGHT_MOTOR_OFFSET = 12; // Speed difference for right motor
+const int RIGHT_MOTOR_OFFSET = 4; // Speed difference for right motor
 const int LEFT_MOTOR_OFFSET = 4; // Speed difference for left motor
 
 // Turn counter for auto-recalibration
@@ -145,7 +144,7 @@ uint8_t turnCounter = 0;    // Count completed turns
 // Global variables for straight-line control
 uint8_t isMovingStraight = 0; // Flag for straight movement mode
 float forwardSetpointAngle = 0; // Target roll angle for straight movement
-const float Kp = 2.5;         // Proportional gain for gyro correction (tune if needed)
+const float Kp = 3;         // Proportional gain for gyro correction (tune if needed)
 const float Kp_avoid = 2;   // Proportional gain for collision avoidance (tune if needed)
 uint16_t forward_duration_counter = 0; // Counter for forward movement time
 #define FORWARD_DURATION 20   // 20 loops * 50ms/loop = 1000ms
@@ -242,15 +241,14 @@ void motor_forward_straight() {
     // serial_string("Moving FORWARD (straight) for 1000ms...\n");
 }
 
-
 void correct_straight_path() {
     if (!isMovingStraight) return;
 
     // Left-hand rule maze navigation algorithm
-    
-    uint16_t left_distance = sonar_get_distance_cm();     // Left sensor 
-    uint16_t front_distance = sonar3_get_distance_cm();   // Front sensor   
+    uint16_t left_distance = sonar_get_distance_cm();     // Left sensor
+    uint16_t front_distance = sonar3_get_distance_cm();   // Front sensor  
     uint16_t right_distance = sonar2_get_distance_cm();   // Right sensor
+    
     // Skip left-hand rule decisions if we're in distance-based movement after turns
     if (sequenceStep == 6 || sequenceStep == 7) {
         // Only do gyro correction, collision avoidance, and obstacle avoidance during distance-based movement
@@ -318,7 +316,6 @@ void correct_straight_path() {
         }
     }
     
-    
     // Normal left-hand rule navigation (only when not in distance-based movement)
     // Priority 1: Turn left if there's enough space on the left (>30cm)
     if (left_distance > WALL_DISTANCE_THRESHOLD_CM && left_distance != 0xFFFF) {
@@ -337,7 +334,7 @@ void correct_straight_path() {
     // Priority 2: Continue straight if left is blocked but front is clear
     if (front_distance > FRONT2_OBSTACLE_THRESHOLD_CM && front_distance != 0xFFFF) {
         // Continue moving straight with gyroscope and collision avoidance correction
-        // serial_string("k\n");
+        serial_string("k\n");
         
         // Collision avoidance logic: steer away if too close to side obstacles
         // float avoidance_correction = 0;
@@ -377,9 +374,7 @@ void correct_straight_path() {
 
         // Calculate new motor speeds with offset for the right motor
         int16_t rightSpeed = motor_speed + RIGHT_MOTOR_OFFSET + total_correction;
-        // int16_t rightSpeed = motor_speed + total_correction;
         int16_t leftSpeed = motor_speed - total_correction;
-        // int16_t leftSpeed = motor_speed + LEFT_MOTOR_OFFSET - total_correction;
 
         // Clamp speeds to valid PWM range (0-255)
         if (rightSpeed > 255) rightSpeed = 255;
@@ -391,7 +386,6 @@ void correct_straight_path() {
         set_left_motor_speed((uint8_t)leftSpeed);
         return;
     }
-    
     
     // Priority 3: Turn right if left and front are blocked but right is clear
     if (right_distance > WALL_DISTANCE_THRESHOLD_CM && right_distance != 0xFFFF) {
@@ -589,7 +583,7 @@ void execute_turn_sequence() {
             isMovingStraight = 0;
             distance_initialized_left = 0; // Reset for next time
             
-            serial_string("Forward movement after left complete. Moved: ");
+            // serial_string("Forward movement after left complete. Moved: ");
             // serial_num(distance_moved);
             // serial_string("cm\n");
             
@@ -603,7 +597,7 @@ void execute_turn_sequence() {
     }
     else if (sequenceStep == 4 && !isTurning && !isMovingStraight) {
         // Distance-based forward movement after right turn with gyro assistance
-        serial_string("Moving forward 25cm after right turn with gyro assistance...\n");
+        // serial_string("Moving forward 25cm after right turn with gyro assistance...\n");
         
         // Start gyro-assisted forward movement
         motor_forward_straight(); // This sets isMovingStraight = 1 and starts gyro correction

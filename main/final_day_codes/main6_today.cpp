@@ -1,5 +1,6 @@
 #define F_CPU 1000000UL
 #include <avr/io.h>
+#include <avr/interrupt.h>
 #include <util/delay.h>
 #include <stdlib.h>
 #include <math.h>
@@ -15,18 +16,17 @@
 
 
 //! ir sensor
-#define IR_SENSOR_LEFT_PIN PA5  // Left IR sensor (green)
-#define IR_SENSOR_RIGHT_PIN PA6 // Right IR sensor (red)
+#define IR_SENSOR_PIN PB0 // Example pin for IR sensor
 
 //! Maze navigation thresholds
-#define FRONT_OBSTACLE_THRESHOLD_CM 13 // Distance in cm to trigger left turn
+// #define FRONT_OBSTACLE_THRESHOLD_CM 13 // Distance in cm to trigger left turn
 #define FRONT2_OBSTACLE_THRESHOLD_CM 20 // Distance in cm to trigger left turn
 #define WALL_DISTANCE_THRESHOLD_CM 40  // Distance threshold for wall detection (left-hand rule)
 #define DELAY_AFTER_LEFT_DETECTION 400   // Duration to move forward after turns
 
 //! angle for turning
-#define ANGLE_LEFT 80
-#define ANGLE_RIGHT 78
+#define ANGLE_LEFT 78
+#define ANGLE_RIGHT 77
 //! sonar code
 #define SONAR_TRIG PD2
 #define SONAR_ECHO PD3
@@ -123,19 +123,24 @@ uint16_t sonar3_get_distance_cm(void) {
 
 
 void motor_stop(void);
+
+
+void motor_stop(void);
 void motor_forward(void);
 void motor_reverse(void);
 void motor_left(void);
 void motor_right(void);
 void set_right_motor_speed(uint8_t speed);
 void set_left_motor_speed(uint8_t speed);
+void timer1_sonar_init(void);
+void trigger_next_sonar(void);
 
 // Global variables for turning control
 uint8_t isTurning = 0;      // 0=not turning, 1=left turn, 2=right turn
 float startAngle = 0;       // Angle when turn started
 float currentAngle = 0;     // Current roll angle * 0.7
 uint8_t sequenceStep = 0;   // 0=left, 1=right, 2=forward, 3=done
-const int RIGHT_MOTOR_OFFSET = 4; // Speed difference for right motor
+const int RIGHT_MOTOR_OFFSET = 7; // Speed difference for right motor
 const int LEFT_MOTOR_OFFSET = 4; // Speed difference for left motor
 
 // Turn counter for auto-recalibration
@@ -145,7 +150,7 @@ uint8_t turnCounter = 0;    // Count completed turns
 // Global variables for straight-line control
 uint8_t isMovingStraight = 0; // Flag for straight movement mode
 float forwardSetpointAngle = 0; // Target roll angle for straight movement
-const float Kp = 3;         // Proportional gain for gyro correction (tune if needed)
+const float Kp = 2.5;         // Proportional gain for gyro correction (tune if needed)
 const float Kp_avoid = 2;   // Proportional gain for collision avoidance (tune if needed)
 uint16_t forward_duration_counter = 0; // Counter for forward movement time
 #define FORWARD_DURATION 20   // 20 loops * 50ms/loop = 1000ms
@@ -156,36 +161,165 @@ uint8_t motor_speed = 120;  // Default speed (0-255)
 uint8_t speed_increment = 25; // Speed change step
 uint8_t control_mode = 0;   // 0 = Bluetooth, 1 = Gesture
 
-// IR collision avoidance variables
-uint8_t isInCollisionAvoidance = 0;  // Flag to indicate collision avoidance mode
-uint8_t collisionAvoidanceStep = 0;  // Step in collision avoidance sequence
-float collisionStartAngle = 0;       // Angle when collision avoidance started
-#define IR_COLLISION_TURN_ANGLE 10   // 10-degree turn for collision avoidance
-
 // Distance tracking for post-turn movement
 uint16_t initial_front_distance_left = 0;
 uint8_t distance_initialized_left = 0;
 uint16_t initial_front_distance_right = 0;
 uint8_t distance_initialized_right = 0;
 
-// Read left IR sensor (PA5)
-uint8_t ir_sensor_left_read(void) {
-    // Configure left IR sensor pin as input with pull-up
-    DDRA &= ~(1 << IR_SENSOR_LEFT_PIN);  // Set as input
-    PORTA |= (1 << IR_SENSOR_LEFT_PIN);  // Enable pull-up resistor
- 
-    // Read the sensor (0 = obstacle detected, 1 = no obstacle)
-    return (PINA & (1 << IR_SENSOR_LEFT_PIN)) ? 1 : 0;
+// Global sensor cache for interrupt-driven reading
+volatile uint16_t cached_left_distance = 100;
+volatile uint16_t cached_front_distance = 100;
+volatile uint16_t cached_right_distance = 100;
+volatile uint8_t sensor_read_counter = 0;
+volatile uint8_t sonar_trigger_active = 0;  // Flag to prevent overlapping readings
+volatile uint8_t echo_measurement_state = 0; // 0=idle, 1=waiting_for_echo, 2=measuring_echo
+volatile uint16_t echo_count = 0;           // Echo pulse width counter
+
+// Timer1 interrupt-driven sonar system
+void timer1_sonar_init(void) {
+    // Timer1 setup for 50ms intervals (20Hz sonar reading cycle)
+    TCCR1A = 0; // Normal mode
+    TCCR1B = (1 << WGM12) | (1 << CS12) | (1 << CS10); // CTC mode, prescaler 1024
+    OCR1A = 48; // 1MHz / 1024 / 48 ≈ 20Hz (50ms intervals)
+    TIMSK |= (1 << OCIE1A); // Enable Timer1 compare match A interrupt
+    
+    // Initialize first sonar reading
+    sensor_read_counter = 0;
+    sonar_trigger_active = 0;
+    echo_measurement_state = 0;
+    echo_count = 0;
 }
 
-// Read right IR sensor (PA6)
-uint8_t ir_sensor_right_read(void) {
-    // Configure right IR sensor pin as input with pull-up
-    DDRA &= ~(1 << IR_SENSOR_RIGHT_PIN);  // Set as input
-    PORTA |= (1 << IR_SENSOR_RIGHT_PIN);  // Enable pull-up resistor
+// Timer1 interrupt service routine - triggers sonar readings
+ISR(TIMER1_COMPA_vect) {
+    // Only trigger if previous reading is complete
+    if (!sonar_trigger_active) {
+        trigger_next_sonar();
+    }
+}
+
+// Non-blocking sonar trigger function
+void trigger_next_sonar(void) {
+    if (sonar_trigger_active) return; // Previous reading still in progress
+    
+    sonar_trigger_active = 1;
+    echo_count = 0;
+    echo_measurement_state = 0;
+    
+    // Cycle through sensors
+    switch (sensor_read_counter % 3) {
+        case 0: // Left sonar
+            PORTD &= ~(1 << SONAR_TRIG);
+            _delay_us(2);
+            PORTD |= (1 << SONAR_TRIG);
+            _delay_us(10);
+            PORTD &= ~(1 << SONAR_TRIG);
+            
+            // Simple polling with timeout - no timer conflicts
+            uint16_t timeout_left = 0;
+            while (!(PIND & (1 << SONAR_ECHO)) && timeout_left < 3000) {
+                timeout_left++;
+                _delay_us(1);
+            }
+            
+            if (PIND & (1 << SONAR_ECHO)) {
+                uint16_t pulse_width = 0;
+                while ((PIND & (1 << SONAR_ECHO)) && pulse_width < 30000) {
+                    pulse_width++;
+                    _delay_us(1);
+                }
+                cached_left_distance = (pulse_width < 30000) ? (uint16_t)(pulse_width * 2.3 / 10) : 0xFFFF;
+            } else {
+                cached_left_distance = 0xFFFF; // Timeout
+            }
+            break;
+            
+        case 1: // Front sonar
+            PORTB &= ~(1 << SONAR3_TRIG);
+            _delay_us(2);
+            PORTB |= (1 << SONAR3_TRIG);
+            _delay_us(10);
+            PORTB &= ~(1 << SONAR3_TRIG);
+            
+            uint16_t timeout_front = 0;
+            while (!(PINB & (1 << SONAR3_ECHO)) && timeout_front < 3000) {
+                timeout_front++;
+                _delay_us(1);
+            }
+            
+            if (PINB & (1 << SONAR3_ECHO)) {
+                uint16_t pulse_width = 0;
+                while ((PINB & (1 << SONAR3_ECHO)) && pulse_width < 30000) {
+                    pulse_width++;
+                    _delay_us(1);
+                }
+                cached_front_distance = (pulse_width < 30000) ? (uint16_t)(pulse_width * 2.3 / 10) : 0xFFFF;
+            } else {
+                cached_front_distance = 0xFFFF;
+            }
+            break;
+            
+        case 2: // Right sonar
+            PORTD &= ~(1 << SONAR2_TRIG);
+            _delay_us(2);
+            PORTD |= (1 << SONAR2_TRIG);
+            _delay_us(10);
+            PORTD &= ~(1 << SONAR2_TRIG);
+            
+            uint16_t timeout_right = 0;
+            while (!(PIND & (1 << SONAR2_ECHO)) && timeout_right < 3000) {
+                timeout_right++;
+                _delay_us(1);
+            }
+            
+            if (PIND & (1 << SONAR2_ECHO)) {
+                uint16_t pulse_width = 0;
+                while ((PIND & (1 << SONAR2_ECHO)) && pulse_width < 30000) {
+                    pulse_width++;
+                    _delay_us(1);
+                }
+                cached_right_distance = (pulse_width < 30000) ? (uint16_t)(pulse_width * 2.3 / 10) : 0xFFFF;
+            } else {
+                cached_right_distance = 0xFFFF;
+            }
+            break;
+    }
+    
+    sensor_read_counter++;
+    sonar_trigger_active = 0; // Reading complete
+}
+
+// Fast gyro correction function - no sensor reading overhead
+void apply_fast_gyro_correction() {
+    if (!isMovingStraight) return;
+    
+    // Pure gyroscope correction for maintaining straight line - no delays
+    float gyro_error = currentAngle - forwardSetpointAngle;
+    int16_t gyro_correction = (int16_t)(Kp * gyro_error);
+    
+    // Calculate new motor speeds with offset for the right motor
+    int16_t rightSpeed = motor_speed + RIGHT_MOTOR_OFFSET + gyro_correction;
+    int16_t leftSpeed = motor_speed - gyro_correction;
+
+    // Clamp speeds to valid PWM range (0-255)
+    if (rightSpeed > 255) rightSpeed = 255;
+    if (rightSpeed < 0) rightSpeed = 0;
+    if (leftSpeed > 255) leftSpeed = 255;
+    if (leftSpeed < 0) leftSpeed = 0;
+
+    set_right_motor_speed((uint8_t)rightSpeed);
+    set_left_motor_speed((uint8_t)leftSpeed);
+}
+
+uint8_t ir_sensor_read(void) {
+    // Configure IR sensor pin as input with pull-up
+    DDRB &= ~(1 << IR_SENSOR_PIN);  // Set as input
+    PORTB |= (1 << IR_SENSOR_PIN);  // Enable pull-up resistor
  
     // Read the sensor (0 = obstacle detected, 1 = no obstacle)
-    return (PINA & (1 << IR_SENSOR_RIGHT_PIN)) ? 1 : 0;
+    return (PINB & (1 << IR_SENSOR_PIN)) ? 1 : 0;
+
 }
 
 void pwm_init() {
@@ -248,99 +382,53 @@ void motor_forward_straight() {
     // Set initial motor directions for forward movement
     PORTA &= ~((1 << MOTOR1_IN1) | (1 << MOTOR2_IN1));
     PORTA |= (1 << MOTOR1_IN2) | (1 << MOTOR2_IN2);
-    // set_right_motor_speed(motor_speed);
-	  // set_left_motor_speed(motor_speed+16.5);
 
     // Record the starting angle for straight-line correction
     forwardSetpointAngle = currentAngle;
     isMovingStraight = 1;
     forward_duration_counter = 0; // Reset duration counter
+    
+    // Apply immediate fast gyro correction for responsive control
+    apply_fast_gyro_correction();
+    
     // serial_string("Moving FORWARD (straight) for 1000ms...\n");
 }
 
 void correct_straight_path() {
     if (!isMovingStraight) return;
 
-    // Check IR sensors for immediate collision avoidance (highest priority)
-    if (!isInCollisionAvoidance) {
-        uint8_t left_ir = ir_sensor_left_read();
-        uint8_t right_ir = ir_sensor_right_read();
-        
-        if (left_ir == 0) { // Left IR sensor triggered (obstacle detected)
-            motor_stop();
-            isMovingStraight = 0;
-            start_ir_collision_avoidance_left();
-            return;
-        }
-        else if (right_ir == 0) { // Right IR sensor triggered (obstacle detected)
-            motor_stop();
-            isMovingStraight = 0;
-            start_ir_collision_avoidance_right();
-            return;
-        }
-    }
+    // Use cached sensor values - NO direct sonar calls for CPU separation
+    uint16_t left_distance = cached_left_distance;
+    uint16_t front_distance = cached_front_distance;  
+    uint16_t right_distance = cached_right_distance;
+    
+    // uint16_t left_distance = 10;
+    // uint16_t front_distance = 100;  
+    // uint16_t right_distance =10;
 
-    // Left-hand rule maze navigation algorithm
-    uint16_t left_distance = sonar_get_distance_cm();     // Left sensor
-    uint16_t front_distance = sonar3_get_distance_cm();   // Front sensor  
-    uint16_t right_distance = sonar2_get_distance_cm();   // Right sensor
+    
+    // Debug output every 20 cycles (about once per second)
+    static uint8_t debug_counter = 0;
+    debug_counter++;
+    if (debug_counter >= 20) {
+        debug_counter = 0;
+        serial_string("Nav: L=");
+        serial_num(left_distance);
+        serial_string(" F=");
+        serial_num(front_distance);
+        serial_string(" R=");
+        serial_num(right_distance);
+        serial_string(" Step=");
+        serial_num(sequenceStep);
+        serial_string("\n");
+    }
     
     // Skip left-hand rule decisions if we're in distance-based movement after turns
     if (sequenceStep == 6 || sequenceStep == 7) {
-        // Only do gyro correction, collision avoidance, and obstacle avoidance during distance-based movement
+        // Only do fast gyro correction during distance-based movement
         if (front_distance > FRONT2_OBSTACLE_THRESHOLD_CM && front_distance != 0xFFFF) {
-            // Collision avoidance logic: steer away if too close to side obstacles
-            // float avoidance_correction = 0;
-            
-            // // Check left sensor for collision avoidance
-            // if (left_distance != 0xFFFF && left_distance < COLLISION_AVOIDANCE_THRESHOLD) {
-            //     // Too close to left obstacle - steer RIGHT (positive correction)
-            //     float left_error = COLLISION_AVOIDANCE_THRESHOLD - left_distance;
-            //     avoidance_correction -= Kp_avoid * left_error;
-            //     // serial_string("Left correction: ");
-            //     // serial_num(avoidance_correction);
-            //     // serial_string("\n");
-            //     // serial_string("COLLISION AVOIDANCE: Left obstacle at ");
-            //     // serial_num(left_distance);
-            //     // serial_string("cm - steering RIGHT\n");
-            // }
-            
-            // // Check right sensor for collision avoidance
-            // if (right_distance != 0xFFFF && right_distance < COLLISION_AVOIDANCE_THRESHOLD) {
-            //     // Too close to right obstacle - steer LEFT (negative correction)
-            //     float right_error = COLLISION_AVOIDANCE_THRESHOLD - right_distance;
-            //     avoidance_correction += Kp_avoid * right_error;
-            //     // serial_string("Right correction: ");
-            //     // serial_num(avoidance_correction);
-            //     // serial_string("\n");
-            //     // serial_string("COLLISION AVOIDANCE: Right obstacle at ");
-            //     // serial_num(right_distance);
-            //     // serial_string("cm - steering LEFT\n");
-            // }
-            
-            // Gyroscope correction for maintaining straight line
-            float gyro_error = currentAngle - forwardSetpointAngle;
-            int16_t gyro_correction = (int16_t)(Kp * gyro_error);
-            // serial_string("Gyro correction: ");
-            // serial_num(gyro_correction);
-            // serial_string("\n");
-            // Combine collision avoidance and gyro corrections
-            // int16_t total_correction = gyro_correction + (int16_t)avoidance_correction;
-            int16_t total_correction = gyro_correction;
-            
-            // Calculate new motor speeds with offset for the right motor
-            int16_t rightSpeed = motor_speed + RIGHT_MOTOR_OFFSET + total_correction;
-            // int16_t rightSpeed = motor_speed + total_correction;
-            int16_t leftSpeed = motor_speed - total_correction;
-
-            // Clamp speeds to valid PWM range (0-255)
-            if (rightSpeed > 255) rightSpeed = 255;
-            if (rightSpeed < 0) rightSpeed = 0;
-            if (leftSpeed > 255) leftSpeed = 255;
-            if (leftSpeed < 0) leftSpeed = 0;
-
-            set_right_motor_speed((uint8_t)rightSpeed);
-            set_left_motor_speed((uint8_t)leftSpeed);
+            // Fast gyro correction only - no sensor reading overhead
+            apply_fast_gyro_correction();
             return;
         } else {
             // Stop if obstacle detected during distance movement
@@ -359,9 +447,9 @@ void correct_straight_path() {
         _delay_ms(DELAY_AFTER_LEFT_DETECTION); // Move forward for a brief moment
         motor_stop();
         isMovingStraight = 0;
-        // serial_string("Left space available (");
-        // serial_num(left_distance);
-        // serial_string("cm) - Turning LEFT\n");
+        serial_string("Left space available (");
+        serial_num(left_distance);
+        serial_string("cm) - Turning LEFT\n");
         sequenceStep = 1; // Move to left turn
         _delay_ms(500); // Brief pause
         return;
@@ -369,56 +457,8 @@ void correct_straight_path() {
     
     // Priority 2: Continue straight if left is blocked but front is clear
     if (front_distance > FRONT2_OBSTACLE_THRESHOLD_CM && front_distance != 0xFFFF) {
-        // Continue moving straight with gyroscope and collision avoidance correction
-        
-        // Collision avoidance logic: steer away if too close to side obstacles
-        // float avoidance_correction = 0;
-        
-        // // Check left sensor for collision avoidance
-        // if (left_distance != 0xFFFF && left_distance < COLLISION_AVOIDANCE_THRESHOLD) {
-        //     // Too close to left obstacle - steer RIGHT (positive correction)
-        //     float left_error = COLLISION_AVOIDANCE_THRESHOLD - left_distance;
-        //     avoidance_correction -= Kp_avoid * left_error;
-            
-        //     // serial_string("left_correction: ");
-        //     // serial_num(avoidance_correction);
-        //     // serial_string("\n");
-        // }
-        
-        // // Check right sensor for collision avoidance
-        // if (right_distance != 0xFFFF && right_distance < COLLISION_AVOIDANCE_THRESHOLD) {
-        //     // Too close to right obstacle - steer LEFT (negative correction)
-        //     float right_error = COLLISION_AVOIDANCE_THRESHOLD - right_distance;
-        //     avoidance_correction += Kp_avoid * right_error;
-
-        //     // serial_string("right_correction: ");
-        //     // serial_num(avoidance_correction);
-        //     // serial_string("\n");
-        // }
-        
-        // Gyroscope correction for maintaining straight line
-        float gyro_error = currentAngle - forwardSetpointAngle;
-        int16_t gyro_correction = (int16_t)(Kp * gyro_error);
-        // serial_string("gyro_correction: ");
-        // serial_num(gyro_correction);
-        // serial_string("\n");
-        
-        // Combine collision avoidance and gyro corrections
-        // int16_t total_correction = gyro_correction + (int16_t)avoidance_correction;
-        int16_t total_correction = gyro_correction;
-
-        // Calculate new motor speeds with offset for the right motor
-        int16_t rightSpeed = motor_speed + RIGHT_MOTOR_OFFSET + total_correction;
-        int16_t leftSpeed = motor_speed - total_correction;
-
-        // Clamp speeds to valid PWM range (0-255)
-        if (rightSpeed > 255) rightSpeed = 255;
-        if (rightSpeed < 0) rightSpeed = 0;
-        if (leftSpeed > 255) leftSpeed = 255;
-        if (leftSpeed < 0) leftSpeed = 0;
-
-        set_right_motor_speed((uint8_t)rightSpeed);
-        set_left_motor_speed((uint8_t)leftSpeed);
+        // Fast gyro correction only for responsive control - no sensor reading delays
+        apply_fast_gyro_correction();
         return;
     }
     
@@ -427,9 +467,9 @@ void correct_straight_path() {
         // _delay_ms(400);
         motor_stop();
         isMovingStraight = 0;
-        // serial_string("Front blocked, right space available (");
-        // serial_num(right_distance);
-        // serial_string("cm) - Turning RIGHT\n");
+        serial_string("Front blocked, right space available (");
+        serial_num(right_distance);
+        serial_string("cm) - Turning RIGHT\n");
         sequenceStep = 3; // Move to right turn
         _delay_ms(500); // Brief pause
         return;
@@ -438,14 +478,14 @@ void correct_straight_path() {
     // Priority 4: Dead end - all sides blocked, turn right (180° turn logic)
     motor_stop();
     isMovingStraight = 0;
-    // serial_string("Dead end detected - All sides blocked! Turning RIGHT\n");
-    // serial_string("Distances: L=");
-    // serial_num(left_distance);
-    // serial_string(", F=");
-    // serial_num(front_distance);
-    // serial_string(", R=");
-    // serial_num(right_distance);
-    // serial_string("\n");
+    serial_string("Dead end detected - All sides blocked! Turning RIGHT\n");
+    serial_string("Distances: L=");
+    serial_num(left_distance);
+    serial_string(", F=");
+    serial_num(front_distance);
+    serial_string(", R=");
+    serial_num(right_distance);
+    serial_string("\n");
     sequenceStep = 5; // Move to dead end right turn (no forward movement after)
     _delay_ms(500); // Brief pause
 }
@@ -456,12 +496,14 @@ void motor_stop() {
     OCR0 = 0;  // Left motor
 }
 
-void motor_reverse() {
-    PORTA &= ~((1 << MOTOR1_IN2) | (1 << MOTOR2_IN2));
-    PORTA |= (1 << MOTOR1_IN1) | (1 << MOTOR2_IN1);
-    set_right_motor_speed(motor_speed + RIGHT_MOTOR_OFFSET);
-    set_left_motor_speed(motor_speed);
-}
+// void motor_reverse() {
+// 	PORTA &= ~((1 << MOTOR1_IN2) | (1 << MOTOR2_IN2));
+//     PORTA |= (1 << MOTOR1_IN1) | (1 << MOTOR2_IN1);
+//     set_motor_speed(motor_speed);
+// 	set_right_motor_speed(motor_speed-20);
+// 	set_left_motor_speed(motor_speed+16.5-20);
+// 	_delay_ms(1000);
+// }
 
 void motor_right() {
     // serial_string("inside motor right");
@@ -508,77 +550,7 @@ void start_right_turn() {
     // serial_string("°\n");
 }
 
-// IR Collision Avoidance Functions
-void start_ir_collision_avoidance_left() {
-    // Left IR sensor triggered - reverse and turn right 10 degrees
-    serial_string("LEFT IR triggered - reversing and turning RIGHT\n");
-    isInCollisionAvoidance = 1;
-    collisionAvoidanceStep = 1; // 1 = reverse, 2 = turn right
-    collisionStartAngle = currentAngle;
-    motor_reverse();
-    _delay_ms(300); // Reverse for 300ms
-}
-
-void start_ir_collision_avoidance_right() {
-    // Right IR sensor triggered - reverse and turn left 10 degrees
-    serial_string("RIGHT IR triggered - reversing and turning LEFT\n");
-    isInCollisionAvoidance = 1;
-    collisionAvoidanceStep = 3; // 3 = reverse, 4 = turn left
-    collisionStartAngle = currentAngle;
-    motor_reverse();
-    _delay_ms(300); // Reverse for 300ms
-}
-
-void check_ir_collision_avoidance() {
-    if (collisionAvoidanceStep == 1) {
-        // Start right turn after reverse (left IR triggered)
-        collisionAvoidanceStep = 2;
-        startAngle = currentAngle;
-        isTurning = 2; // Right turn
-        motor_right();
-        serial_string("Starting 10-degree RIGHT turn after reverse\n");
-    }
-    else if (collisionAvoidanceStep == 2) {
-        // Check if 10-degree right turn is complete
-        float angleDiff = startAngle - currentAngle;
-        if (angleDiff >= IR_COLLISION_TURN_ANGLE) {
-            motor_stop();
-            isTurning = 0;
-            isInCollisionAvoidance = 0;
-            collisionAvoidanceStep = 0;
-            serial_string("IR collision avoidance RIGHT turn complete\n");
-            _delay_ms(200);
-        }
-    }
-    else if (collisionAvoidanceStep == 3) {
-        // Start left turn after reverse (right IR triggered)
-        collisionAvoidanceStep = 4;
-        startAngle = currentAngle;
-        isTurning = 1; // Left turn
-        motor_left();
-        serial_string("Starting 10-degree LEFT turn after reverse\n");
-    }
-    else if (collisionAvoidanceStep == 4) {
-        // Check if 10-degree left turn is complete
-        float angleDiff = currentAngle - startAngle;
-        if (angleDiff >= IR_COLLISION_TURN_ANGLE) {
-            motor_stop();
-            isTurning = 0;
-            isInCollisionAvoidance = 0;
-            collisionAvoidanceStep = 0;
-            serial_string("IR collision avoidance LEFT turn complete\n");
-            _delay_ms(200);
-        }
-    }
-}
-
 void check_turn_completion() {
-    // Handle IR collision avoidance turns separately
-    if (isInCollisionAvoidance) {
-        check_ir_collision_avoidance();
-        return;
-    }
-    
     if (isTurning == 1) { // Left turn
         float angleDiff = currentAngle - startAngle;
         
@@ -638,25 +610,6 @@ void check_turn_completion() {
 }
 
 void execute_turn_sequence() {
-    // Check IR sensors for collision avoidance (highest priority)
-    if (!isInCollisionAvoidance && !isTurning) {
-        uint8_t left_ir = ir_sensor_left_read();
-        uint8_t right_ir = ir_sensor_right_read();
-        
-        if (left_ir == 0) { // Left IR sensor triggered (obstacle detected)
-            motor_stop();
-            isMovingStraight = 0;
-            start_ir_collision_avoidance_left();
-            return;
-        }
-        else if (right_ir == 0) { // Right IR sensor triggered (obstacle detected)
-            motor_stop();
-            isMovingStraight = 0;
-            start_ir_collision_avoidance_right();
-            return;
-        }
-    }
-    
     if (sequenceStep == 0 && !isTurning && !isMovingStraight) {
         // Start moving forward and continuously check for left-hand rule decisions
         motor_forward_straight();
@@ -963,6 +916,9 @@ int main() {
   sonar2_init();  // Right sonar (PD4, PD5)
   sonar3_init();  // Front sonar (PB1, PB2)
   
+  // Initialize Timer1 for interrupt-driven sonar readings
+  timer1_sonar_init();
+  
 	// Initialize LED pin (PB0) as output
 	DDRB |= (1 << PB0);  // Set PB0 as output for LED
 	// Note: PB1 is used for front sonar trigger, not for LED
@@ -970,6 +926,9 @@ int main() {
 	
 	TWI_Init();
 	MPU6050_Init();
+	
+	// Enable global interrupts for timer-based sonar readings
+	sei();
 
 	// Raw sensor data
 	int16_t accelX, accelY, accelZ;
@@ -1149,37 +1108,62 @@ int main() {
 					serial_string("Please calibrate first (press 'C')\n");
 				}
 			} else if (cmd == 'D' || cmd == 'd') {
-				// Test all sonar sensors
+				// Test all sonar sensors - both cached and direct readings
+				serial_string("=== SONAR SENSOR TEST ===\n");
+				
+				// Show cached values from interrupt system
+				serial_string("Cached values - Left: ");
+				serial_num(cached_left_distance);
+				serial_string("cm, Front: ");
+				serial_num(cached_front_distance);
+				serial_string("cm, Right: ");
+				serial_num(cached_right_distance);
+				serial_string("cm\n");
+				
+				// Test direct readings for comparison
 				uint16_t left_dist = sonar_get_distance_cm();
 				uint16_t right_dist = sonar2_get_distance_cm();
 				uint16_t front_dist = sonar3_get_distance_cm();
 				
-				serial_string("Sonar distances - Left: ");
+				serial_string("Direct readings - Left: ");
 				serial_num(left_dist);
 				serial_string("cm, Right: ");
 				serial_num(right_dist);
 				serial_string("cm, Front: ");
 				serial_num(front_dist);
-				serial_string("cm");
+				serial_string("cm\n");
 				
-				if (front_dist <= FRONT_OBSTACLE_THRESHOLD_CM && front_dist != 0xFFFF) {
-					serial_string(" [OBSTACLE DETECTED!]");
+				// Analyze navigation decision based on cached values
+				serial_string("Navigation analysis:\n");
+				if (cached_left_distance > WALL_DISTANCE_THRESHOLD_CM && cached_left_distance != 0xFFFF) {
+					serial_string("- LEFT turn available (>40cm)\n");
+				} else {
+					serial_string("- LEFT blocked (<40cm)\n");
 				}
-				serial_string("\n");
-			} else if (cmd == 'I' || cmd == 'i') {
-				// Test IR sensors
-				uint8_t left_ir = ir_sensor_left_read();
-				uint8_t right_ir = ir_sensor_right_read();
 				
-				serial_string("IR sensors - Left: ");
-				serial_num(left_ir);
-				serial_string(" (");
-				serial_string(left_ir ? "CLEAR" : "OBSTACLE");
-				serial_string("), Right: ");
-				serial_num(right_ir);
-				serial_string(" (");
-				serial_string(right_ir ? "CLEAR" : "OBSTACLE");
-				serial_string(")\n");
+				if (cached_front_distance > FRONT2_OBSTACLE_THRESHOLD_CM && cached_front_distance != 0xFFFF) {
+					serial_string("- FRONT clear (>20cm)\n");
+				} else {
+					serial_string("- FRONT blocked (<20cm)\n");
+				}
+				
+				if (cached_right_distance > WALL_DISTANCE_THRESHOLD_CM && cached_right_distance != 0xFFFF) {
+					serial_string("- RIGHT turn available (>40cm)\n");
+				} else {
+					serial_string("- RIGHT blocked (<40cm)\n");
+				}
+				
+				// Show what decision would be made
+				if (cached_left_distance > WALL_DISTANCE_THRESHOLD_CM && cached_left_distance != 0xFFFF) {
+					serial_string("Decision: TURN LEFT\n");
+				} else if (cached_front_distance > FRONT2_OBSTACLE_THRESHOLD_CM && cached_front_distance != 0xFFFF) {
+					serial_string("Decision: GO STRAIGHT\n");
+				} else if (cached_right_distance > WALL_DISTANCE_THRESHOLD_CM && cached_right_distance != 0xFFFF) {
+					serial_string("Decision: TURN RIGHT\n");
+				} else {
+					serial_string("Decision: DEAD END - TURN RIGHT\n");
+				}
+				serial_string("========================\n");
 			}
 		}
     

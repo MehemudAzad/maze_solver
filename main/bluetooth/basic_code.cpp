@@ -21,6 +21,8 @@
 #define SONAR3_ECHO PB2
 
 #define IR_SENSOR_PIN PB1 // Example pin for IR sensor
+#define IR_SENSOR_LEFT_PIN PA5  // Left IR sensor
+#define IR_SENSOR_RIGHT_PIN PA6 // Right IR sensor
 void motor_stop(void);
 void motor_forward(void);
 void motor_reverse(void);
@@ -214,6 +216,40 @@ uint16_t sonar3_get_distance_cm(void) {
 uint8_t ir_sensor_read(void) {
 	return (PINC & (1 << IR_SENSOR_PIN)) ? 1 : 0;
 }
+
+// Read left IR sensor (PA5) - returns 0 if obstacle detected, 1 if clear
+uint8_t ir_sensor_left_read(void) {
+    // Configure left IR sensor pin as input with pull-up
+    DDRA &= ~(1 << IR_SENSOR_LEFT_PIN);  // Set as input
+    PORTA |= (1 << IR_SENSOR_LEFT_PIN);  // Enable pull-up resistor
+ 
+    // Read the sensor (0 = obstacle detected, 1 = no obstacle)
+    return (PINA & (1 << IR_SENSOR_LEFT_PIN)) ? 1 : 0;
+}
+
+// Read right IR sensor (PA6) - returns 0 if obstacle detected, 1 if clear
+uint8_t ir_sensor_right_read(void) {
+    // Configure right IR sensor pin as input with pull-up
+    DDRA &= ~(1 << IR_SENSOR_RIGHT_PIN);  // Set as input
+    PORTA |= (1 << IR_SENSOR_RIGHT_PIN);  // Enable pull-up resistor
+ 
+    // Read the sensor (0 = obstacle detected, 1 = no obstacle)
+    return (PINA & (1 << IR_SENSOR_RIGHT_PIN)) ? 1 : 0;
+}
+
+// Check if any collision condition is met (front sonar OR IR sensors)
+uint8_t check_collision_condition(void) {
+    uint16_t front_distance = sonar3_get_distance_cm();
+    uint8_t left_ir = ir_sensor_left_read();
+    uint8_t right_ir = ir_sensor_right_read();
+    
+    // Return 1 if collision detected, 0 if safe
+    // Collision detected if: front distance < 15cm OR any IR sensor triggered (reads 0)
+    if ((front_distance != 0xFFFF && front_distance < 15) || left_ir == 0 || right_ir == 0) {
+        return 1; // Collision detected
+    }
+    return 0; // Safe to proceed
+}
 void pwm_init() {
     DDRB |= (1 << EN_MOTOR1);  // PB3 (OC0) - Right motor ENA
     DDRD |= (1 << EN_MOTOR2);  // PD7 (OC2) - Left motor ENB
@@ -353,10 +389,23 @@ int main(void) {
         if (serial_available()) {
             cmd = serial_read();
 
-            // Stop car if IR sensor is triggered
-            if (ir_sensor_read() == 0) {
+            // Check collision condition (front sonar OR IR sensors)
+            if (check_collision_condition()) {
                 motor_stop();
-                serial_string("IR sensor triggered: Stopping car\n");
+                serial_string("COLLISION DETECTED: Stopping car\n");
+                
+                // Show which sensors triggered
+                uint16_t front_dist = sonar3_get_distance_cm();
+                uint8_t left_ir = ir_sensor_left_read();
+                uint8_t right_ir = ir_sensor_right_read();
+                
+                serial_string("Front: ");
+                serial_num(front_dist);
+                serial_string("cm, Left IR: ");
+                serial_num(left_ir);
+                serial_string(", Right IR: ");
+                serial_num(right_ir);
+                serial_string("\n");
                 continue;
             }
 
@@ -412,8 +461,19 @@ int main(void) {
                     serial_string("\n");
                     break;
 				case 'I': // IR sensor value
-                    serial_string("IR sensor value: ");
-                    serial_num(ir_sensor_read());
+                    serial_string("IR sensors - Left (PA5): ");
+                    serial_num(ir_sensor_left_read());
+                    serial_string(" (");
+                    serial_string(ir_sensor_left_read() ? "CLEAR" : "OBSTACLE");
+                    serial_string("), Right (PA6): ");
+                    serial_num(ir_sensor_right_read());
+                    serial_string(" (");
+                    serial_string(ir_sensor_right_read() ? "CLEAR" : "OBSTACLE");
+                    serial_string(")\n");
+                    
+                    // Also show collision status
+                    serial_string("Collision check: ");
+                    serial_string(check_collision_condition() ? "DANGER" : "SAFE");
                     serial_string("\n");
                     break;
 				case 'D': // Distance

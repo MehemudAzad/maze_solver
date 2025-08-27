@@ -24,8 +24,8 @@
 #define DELAY_AFTER_LEFT_DETECTION 400   // Duration to move forward after turns
 
 //! angle for turning
-#define ANGLE_LEFT 75
-#define ANGLE_RIGHT 75
+#define ANGLE_LEFT 77
+#define ANGLE_RIGHT 73
 //! sonar code
 #define SONAR_TRIG PD2
 #define SONAR_ECHO PD3
@@ -145,6 +145,7 @@ uint8_t turnCounter = 0;    // Count completed turns
 // Global variables for straight-line control
 uint8_t isMovingStraight = 0; // Flag for straight movement mode
 float forwardSetpointAngle = 0; // Target roll angle for straight movement
+float globalReferenceAngle = 0; // Global reference angle that gets updated after each turn
 const float Kp = 2.5;         // Proportional gain for gyro correction (tune if needed)
 const float Kp_avoid = 2;   // Proportional gain for collision avoidance (tune if needed)
 uint16_t forward_duration_counter = 0; // Counter for forward movement time
@@ -235,11 +236,35 @@ void motor_forward_straight() {
     // set_right_motor_speed(motor_speed);
 	  // set_left_motor_speed(motor_speed+16.5);
 
-    // Record the starting angle for straight-line correction
-    forwardSetpointAngle = currentAngle;
+    // Use global reference angle instead of current angle
+    forwardSetpointAngle = globalReferenceAngle;
     isMovingStraight = 1;
     forward_duration_counter = 0; // Reset duration counter
     // serial_string("Moving FORWARD (straight) for 1000ms...\n");
+}
+
+// Function to update global reference angle after turns
+void update_reference_angle_after_turn(uint8_t turn_direction) {
+    // turn_direction: 1 = left turn, 2 = right turn
+    
+    if (turn_direction == 1) { // Left turn
+        // After left turn, add 90 degrees (or actual measured angle)
+        globalReferenceAngle += 85.0;
+        serial_string("Left turn complete - Global ref angle updated to: ");
+        serial_num((int16_t)globalReferenceAngle);
+        serial_string("°\n");
+    }
+    else if (turn_direction == 2) { // Right turn
+        // After right turn, subtract 90 degrees (or actual measured angle)
+        globalReferenceAngle -= 88.0;
+        serial_string("Right turn complete - Global ref angle updated to: ");
+        serial_num((int16_t)globalReferenceAngle);`
+        serial_string("°\n");
+    }
+    
+    // Keep angle within reasonable bounds (-360 to +360)
+    if (globalReferenceAngle > 360.0) globalReferenceAngle -= 360.0;
+    if (globalReferenceAngle < -360.0) globalReferenceAngle += 360.0;
 }
 
 
@@ -489,6 +514,10 @@ void check_turn_completion() {
             motor_stop();
             isTurning = 0;
             turnCounter++; // Increment turn counter
+            
+            // Update global reference angle after left turn (+90 degrees)
+            update_reference_angle_after_turn(1); // 1 = left turn
+            
             // serial_string("LEFT turn complete! Final angle: ");
             // serial_num((int16_t)currentAngle);
             // serial_string("° Turn count: ");
@@ -512,6 +541,10 @@ void check_turn_completion() {
             motor_stop();
             isTurning = 0;
             turnCounter++; // Increment turn counter
+            
+            // Update global reference angle after right turn (-90 degrees)
+            update_reference_angle_after_turn(2); // 2 = right turn
+            
             // serial_string("RIGHT turn complete! Final angle: ");
             // serial_num((int16_t)currentAngle);
             // serial_string("° Turn count: ");
@@ -816,7 +849,11 @@ void auto_recalibrate_gyro(float *AccErrorX_ptr, float *AccErrorY_ptr,
     *gyroAngleX_ptr = 0; *gyroAngleY_ptr = 0; *yaw_ptr = 0;
     *roll_ptr = 0; *pitch_ptr = 0;
     
+    // Reset global reference angle to 0 after recalibration
+    globalReferenceAngle = 0;
+    
     serial_string("Gyro auto-recalibration complete!\n");
+    serial_string("Global reference angle reset to 0\n");
     serial_string("New gyro errors: X=");
     serial_num((int16_t)(*GyroErrorX_ptr * 10));
     serial_string(", Y=");
